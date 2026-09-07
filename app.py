@@ -22,7 +22,7 @@ class Student(db.Model):
     seat=db.Column(db.Integer,default=0)
     role=db.Column(db.String(20),default='student')
     score=db.Column(db.Integer,default=0)
-    hp=db.Column(db.Integer,default=20)
+    hp=db.Column(db.Integer,default=100)
     wins=db.Column(db.Integer,default=0)
     losses=db.Column(db.Integer,default=0)
     online=db.Column(db.Boolean,default=False)
@@ -65,6 +65,36 @@ class RoomPlayer(db.Model):
     joined_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
     __table_args__=(db.UniqueConstraint('room_id','student_id',name='uq_room_student'),)
 
+class PrizeCard(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(80),unique=True,nullable=False)
+    weight=db.Column(db.Float,nullable=False)
+    description=db.Column(db.String(200),default='')
+
+class PrizeDraw(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
+    card_id=db.Column(db.Integer,db.ForeignKey('prize_card.id'),nullable=False)
+    status=db.Column(db.String(20),default='pending')
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+
+PRIZE_CARDS=[
+    ('造型文具',1.0,'抽中後可向老師兌換。'),
+    ('限量商品',1.0,'抽中後可向老師兌換。'),
+    ('功課減量',0.6,'依老師班級規則兌換。'),
+    ('使用電腦',4.0,'依老師班級規則兌換。'),
+    ('值日生跳過',0.5,'依老師班級規則兌換。'),
+    ('免睡卡',2.0,'依老師班級規則兌換。'),
+    ('點數加倍',0.4,'依老師班級規則兌換。'),
+    ('免罰金牌',1.0,'依老師班級規則兌換。'),
+    ('V I P',0.2,'依老師班級規則兌換。'),
+    ('珍珠奶茶',2.0,'依老師班級規則兌換。'),
+    ('我想跟他坐',1.0,'依老師班級規則兌換。'),
+    ('銘謝惠顧',2.0,'本次未抽中獎品。'),
+    ('禮物卡',1.0,'抽中後可向老師兌換。'),
+    ('手工冰淇淋',2.0,'抽中後可向老師兌換。'),
+]
+
 with open(os.path.join(BASE_DIR,'quiz.json'),encoding='utf-8') as f: QUESTIONS=json.load(f)
 
 ROSTER=[(1, '黃聰', '111061', '0924'), (2, '昱綸', '111201', '1031'), (3, '靖喬', '111095', '1118'), (4, '侑辰', '111038', '0107'), (5, '楷欣', '111039', '0111'), (6, '芸霆', '111128', '0126'), (7, '俊賀', '111040', '0129'), (8, '品睿', '111070', '0201'), (9, '柏甫', '111071', '0227'), (10, '威碩', '111164', '0502'), (11, '雋書', '111074', '0612'), (12, '莫凡', '111166', '0703'), (13, '祐廷', '111137', '0723'), (14, '詠琂', '111139', '0818'), (15, '可荺', '111019', '0924'), (16, '張惟', '111079', '1015'), (17, '品真', '111112', '1108'), (18, '彥伃', '111115', '1223'), (19, '羽芯', '111052', '0125'), (20, '紫瑜', '111053', '0205'), (21, '翊榛', '111117', '0217'), (22, '侑璇', '111054', '0218'), (23, '芷軒', '111143', '0310'), (24, '芯妤', '111057', '0402'), (25, '毓琳', '111147', '0520'), (26, '予甯', '111150', '0710')]
@@ -76,7 +106,12 @@ def seed():
             db.session.add(Student(account=account,name=name,password_hash=generate_password_hash(pwd),seat=seat,role='student'))
         db.session.add(Student(account='teacher',name='老師',password_hash=generate_password_hash('1930'),seat=0,role='teacher'))
         db.session.add(Student(account='teacher01',name='小明',password_hash=generate_password_hash('1930'),seat=0,role='student'))
-        db.session.commit()
+    for _s in Student.query.all():
+        if _s.role in ('student','teacher') and _s.hp == 20: _s.hp=100
+    if PrizeCard.query.count()==0:
+        for name,weight,desc in PRIZE_CARDS:
+            db.session.add(PrizeCard(name=name,weight=weight,description=desc))
+    db.session.commit()
 
 def current_user():
     sid=session.get('student_id')
@@ -110,6 +145,8 @@ def index(): return render_template('index.html')
 def student(): return render_template('student.html')
 @app.route('/teacher')
 def teacher(): return render_template('teacher.html')
+@app.route('/game')
+def game(): return render_template('game.html')
 @app.route('/display')
 def display(): return render_template('display.html')
 @app.post('/api/login')
@@ -138,21 +175,31 @@ def questions():
     chosen=random.sample(QUESTIONS,min(n,len(QUESTIONS)))
     # never expose answer before submission
     return jsonify({'ok':True,'questions':[{'id':q['id'],'category':q['category'],'question':q['question'],'options':q['options']} for q in chosen]})
+@app.post('/api/hp/exchange')
+@login_required
+def hp_exchange():
+    u=current_user(); data=request.get_json() or {}; points=max(0,int(data.get('points',1)))
+    if points<1 or u.score<points: return jsonify({'ok':False,'error':'積分不足，無法兌換 HP'}),400
+    u.score-=points
+    u.hp=min(100,u.hp+points*10)
+    db.session.add(ScoreEvent(event_id='hp-exchange:'+str(uuid.uuid4()),student_id=u.id,delta=-points,reason='積分兌換HP'))
+    db.session.commit()
+    return jsonify({'ok':True,'score':u.score,'hp':u.hp,'added_hp':points*10})
+
 @app.post('/api/quiz/finish')
 @login_required
 def quiz_finish():
     u=current_user(); data=request.get_json() or {}; event_id=str(data.get('event_id','')).strip(); mode=str(data.get('mode','ai'))
-    correct=max(0,min(20,int(data.get('correct',0))));
     if mode not in ('ai','real'): mode='ai'
-    bonus=(3 if mode=='ai' else 5) if bool(data.get('win')) else 0
-    participation=1
-    earned=correct+bonus+participation
-    if add_score(u,earned,f'知識王{("AI" if mode=="ai" else "真人")}對戰',event_id):
+    hp=max(0,min(100,int(data.get('hp',u.hp))))
+    u.hp=hp
+    earned=(hp*15)//100
+    if add_score(u,earned,f'知識王{("AI" if mode=="ai" else "真人")}對戰結算（{hp} HP）',event_id):
         if bool(data.get('win')): u.wins+=1
         else: u.losses+=1
         db.session.commit()
-        return jsonify({'ok':True,'earned':earned,'score':u.score})
-    return jsonify({'ok':True,'earned':0,'score':u.score,'duplicate':True})
+        return jsonify({'ok':True,'earned':earned,'score':u.score,'hp':u.hp})
+    return jsonify({'ok':True,'earned':0,'score':u.score,'hp':u.hp,'duplicate':True})
 
 @app.post('/api/validate')
 @login_required
@@ -161,9 +208,10 @@ def validate_answer():
     q=next((x for x in QUESTIONS if x['id']==qid),None)
     if not q: return jsonify({'ok':False,'error':'題目不存在'}),404
     is_correct=choice==q['correct']
+    if not is_correct: u.hp=max(0,u.hp-10)
     db.session.add(AnswerRecord(student_id=u.id,question_id=q['id'],category=q['category'],question=q['question'],selected_choice=choice,correct_choice=q['correct'],is_correct=is_correct))
     db.session.commit()
-    return jsonify({'ok':True,'correct':is_correct})
+    return jsonify({'ok':True,'correct':is_correct,'hp':u.hp})
 
 @app.post('/api/rooms')
 @login_required
@@ -203,7 +251,10 @@ def start_room(code):
     u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
     if not r or r.host_id!=u.id: return jsonify({'ok':False,'error':'只有房主可以開始'}),403
     if RoomPlayer.query.filter_by(room_id=r.id).count()<2: return jsonify({'ok':False,'error':'至少需要兩位玩家'}),400
-    r.status='playing'; r.current_index=0; r.started_at=datetime.now(timezone.utc); db.session.commit()
+    r.status='playing'; r.current_index=0; r.started_at=datetime.now(timezone.utc)
+    for p in RoomPlayer.query.filter_by(room_id=r.id).all():
+        s=db.session.get(Student,p.student_id); s.hp=100; p.answered_index=-1; p.correct_count=0
+    db.session.commit()
     return jsonify({'ok':True,'room':room_state(r)})
 @app.get('/api/rooms/<code>/question')
 @login_required
@@ -226,6 +277,7 @@ def room_answer(code):
     if p.answered_index==idx: return jsonify({'ok':True,'duplicate':True,'correct_count':p.correct_count})
     q=next((x for x in QUESTIONS if x['id']==ids[idx]),None)
     correct=(choice==q['correct'])
+    if not correct: u.hp=max(0,u.hp-10)
     if correct: p.correct_count+=1
     p.answered_index=idx; db.session.commit()
     # advance when all players answered
@@ -236,15 +288,52 @@ def room_answer(code):
             r.status='finished'
             for x in players:
                 s=db.session.get(Student,x.student_id); win=x.correct_count>=(sum(y.correct_count for y in players)-x.correct_count) if len(players)==2 else False
-                # v1: each participant gets correct + participation; winner gets bonus
+                # 真人對戰結算：以個人剩餘 HP 換算班級積分（100 HP = 15 分）
                 event=f'room:{r.id}:player:{x.student_id}'
-                bonus=5 if (len(players)==2 and x.correct_count>next(y.correct_count for y in players if y.student_id!=x.student_id)) else 0
-                add_score(s,x.correct_count+1+bonus,'知識王真人對戰',event)
+                bonus=0
+                add_score(s,(max(0,min(100,s.hp))*15)//100,'知識王真人對戰 HP 結算',event)
                 if bonus: s.wins+=1
                 else: s.losses+=1
             db.session.commit()
         else: db.session.commit()
-    return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'room':room_state(r)})
+    return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'hp':u.hp,'room':room_state(r)})
+
+@app.get('/api/prizes')
+@login_required
+def prizes():
+    u=current_user()
+    cards=PrizeCard.query.order_by(PrizeCard.id).all()
+    owned=(db.session.query(PrizeDraw,PrizeCard).join(PrizeCard,PrizeDraw.card_id==PrizeCard.id).filter(PrizeDraw.student_id==u.id,PrizeDraw.status=='pending').order_by(PrizeDraw.created_at.desc()).all())
+    return jsonify({'ok':True,'cost':20,'cards':[{'id':c.id,'name':c.name,'weight':c.weight,'description':c.description} for c in cards], 'owned':[{'id':d.id,'name':c.name,'description':c.description,'status':d.status,'created_at':d.created_at.isoformat()} for d,c in owned]})
+
+@app.post('/api/prizes/draw')
+@login_required
+def prize_draw():
+    u=current_user(); cost=20
+    if u.score < cost: return jsonify({'ok':False,'error':f'點數不足 {cost} 分','score':u.score}),400
+    cards=PrizeCard.query.all()
+    if not cards: return jsonify({'ok':False,'error':'目前沒有抽獎卡設定'}),500
+    chosen=random.choices(cards,weights=[c.weight for c in cards],k=1)[0]
+    event_id='draw:'+str(uuid.uuid4())
+    if not add_score(u,-cost,'幸運抽獎',event_id): return jsonify({'ok':False,'error':'抽獎失敗，請再試一次'}),500
+    draw=PrizeDraw(student_id=u.id,card_id=chosen.id,status='pending')
+    db.session.add(draw); db.session.commit()
+    return jsonify({'ok':True,'card':{'id':chosen.id,'name':chosen.name,'description':chosen.description},'score':u.score,'draw_id':draw.id})
+
+@app.post('/api/admin/prizes/<int:draw_id>/redeem')
+def redeem_prize(draw_id):
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    d=db.session.get(PrizeDraw,draw_id)
+    if not d or d.status!='pending': return jsonify({'ok':False,'error':'卡片不存在或已核銷'}),404
+    d.status='redeemed'; db.session.commit(); return jsonify({'ok':True})
+
+@app.get('/api/admin/prizes')
+def admin_prizes():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    rows=(db.session.query(PrizeDraw,PrizeCard,Student).join(PrizeCard,PrizeDraw.card_id==PrizeCard.id).join(Student,PrizeDraw.student_id==Student.id).filter(PrizeDraw.status=='pending').order_by(PrizeDraw.created_at.desc()).all())
+    return jsonify({'ok':True,'items':[{'id':d.id,'student_id':s.id,'name':s.name,'account':s.account,'seat':s.seat,'card':c.name,'description':c.description,'created_at':d.created_at.isoformat()} for d,c,s in rows]})
 
 @app.post('/api/admin/score')
 def admin_score():
@@ -268,7 +357,7 @@ def admin_errors():
     return jsonify({'ok':True,'items':[{'question_id':r[0],'question':r[1],'category':r[2],'attempts':int(r[3] or 0),'wrong':int(r[4] or 0)} for r in rows if int(r[4] or 0)>0]})
 
 @app.get('/api/health')
-def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1'})
+def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.1'})
 
 @app.context_processor
 def ctx(): return {'year':datetime.now().year}
