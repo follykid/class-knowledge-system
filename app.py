@@ -23,6 +23,7 @@ class Student(db.Model):
     role=db.Column(db.String(20),default='student')
     score=db.Column(db.Integer,default=0)
     hp=db.Column(db.Integer,default=100)
+    battle_score=db.Column(db.Integer,default=0)
     wins=db.Column(db.Integer,default=0)
     losses=db.Column(db.Integer,default=0)
     online=db.Column(db.Boolean,default=False)
@@ -54,6 +55,7 @@ class Room(db.Model):
     question_ids=db.Column(db.Text,default='[]')
     current_index=db.Column(db.Integer,default=0)
     started_at=db.Column(db.DateTime)
+    question_started_at=db.Column(db.DateTime)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
 
 class RoomPlayer(db.Model):
@@ -62,6 +64,7 @@ class RoomPlayer(db.Model):
     student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
     answered_index=db.Column(db.Integer,default=-1)
     correct_count=db.Column(db.Integer,default=0)
+    battle_score=db.Column(db.Integer,default=0)
     joined_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
     __table_args__=(db.UniqueConstraint('room_id','student_id',name='uq_room_student'),)
 
@@ -101,6 +104,22 @@ ROSTER=[(1, '黃聰', '111061', '0924'), (2, '昱綸', '111201', '1031'), (3, '�
 
 def seed():
     db.create_all()
+    # v1.1 -> v1.2 的輕量資料庫升級：Render 若已有舊 SQLite/Postgres，補上新欄位。
+    inspector=db.inspect(db.engine) if hasattr(db,'inspect') else None
+    # SQLAlchemy 的 inspect 位於 sqlalchemy.inspect，避免依賴舊資料庫 schema。
+    from sqlalchemy import inspect, text
+    insp=inspect(db.engine)
+    upgrades={
+        'student': [('battle_score','INTEGER DEFAULT 0')],
+        'room': [('question_started_at','TIMESTAMP NULL')],
+        'room_player': [('battle_score','INTEGER DEFAULT 0')],
+    }
+    for table, cols in upgrades.items():
+        existing={c['name'] for c in inspect(db.engine).get_columns(table)}
+        for col, definition in cols:
+            if col not in existing:
+                db.session.execute(text(f'ALTER TABLE {table} ADD COLUMN {col} {definition}'))
+    db.session.commit()
     if Student.query.count()==0:
         for seat,name,account,pwd in ROSTER:
             db.session.add(Student(account=account,name=name,password_hash=generate_password_hash(pwd),seat=seat,role='student'))
@@ -108,6 +127,7 @@ def seed():
         db.session.add(Student(account='teacher01',name='小明',password_hash=generate_password_hash('1930'),seat=0,role='student'))
     for _s in Student.query.all():
         if _s.role in ('student','teacher') and _s.hp == 20: _s.hp=100
+        if _s.battle_score is None: _s.battle_score=0
     if PrizeCard.query.count()==0:
         for name,weight,desc in PRIZE_CARDS:
             db.session.add(PrizeCard(name=name,weight=weight,description=desc))
@@ -133,11 +153,11 @@ def add_score(student,delta,reason,event_id):
 
 def leaderboard_data():
     rows=Student.query.filter(Student.role=='student').order_by(Student.score.desc(),Student.seat.asc()).all()
-    return [{'rank':i+1,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'hp':s.hp,'wins':s.wins,'losses':s.losses,'online':bool(s.online)} for i,s in enumerate(rows)]
+    return [{'rank':i+1,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'hp':s.hp,'battle_score':s.battle_score,'wins':s.wins,'losses':s.losses,'online':bool(s.online)} for i,s in enumerate(rows)]
 
 def room_state(room):
     players=RoomPlayer.query.filter_by(room_id=room.id).all()
-    return {'code':room.code,'status':room.status,'host_id':room.host_id,'current_index':room.current_index,'question_count':len(json.loads(room.question_ids or '[]')),'players':[{'student_id':p.student_id,'name':db.session.get(Student,p.student_id).name,'seat':db.session.get(Student,p.student_id).seat,'answered_index':p.answered_index,'correct_count':p.correct_count} for p in players]}
+    return {'code':room.code,'status':room.status,'host_id':room.host_id,'current_index':room.current_index,'question_count':len(json.loads(room.question_ids or '[]')),'players':[{'student_id':p.student_id,'name':db.session.get(Student,p.student_id).name,'seat':db.session.get(Student,p.student_id).seat,'answered_index':p.answered_index,'correct_count':p.correct_count,'battle_score':p.battle_score,'hp':db.session.get(Student,p.student_id).hp} for p in players]}
 
 @app.route('/')
 def index(): return render_template('index.html')
@@ -155,7 +175,7 @@ def api_login():
     u=Student.query.filter_by(account=account).first()
     if not u or not check_password_hash(u.password_hash,pwd): return jsonify({'ok':False,'error':'帳號或密碼錯誤'}),401
     session['student_id']=u.id; u.online=True; db.session.commit()
-    return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'wins':u.wins,'losses':u.losses}})
+    return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
 @app.post('/api/logout')
 def logout():
     u=current_user()
@@ -165,7 +185,7 @@ def logout():
 def me():
     u=current_user();
     if not u: return jsonify({'ok':False}),401
-    return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'wins':u.wins,'losses':u.losses}})
+    return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
 @app.get('/api/leaderboard')
 def leaderboard(): return jsonify({'ok':True,'items':leaderboard_data()})
 @app.get('/api/questions')
@@ -181,25 +201,48 @@ def hp_exchange():
     u=current_user(); data=request.get_json() or {}; points=max(0,int(data.get('points',1)))
     if points<1 or u.score<points: return jsonify({'ok':False,'error':'積分不足，無法兌換 HP'}),400
     u.score-=points
-    u.hp=min(100,u.hp+points*10)
+    u.hp=u.hp+points*10
     db.session.add(ScoreEvent(event_id='hp-exchange:'+str(uuid.uuid4()),student_id=u.id,delta=-points,reason='積分兌換HP'))
     db.session.commit()
     return jsonify({'ok':True,'score':u.score,'hp':u.hp,'added_hp':points*10})
+
+@app.post('/api/quiz/start')
+@login_required
+def quiz_start():
+    u=current_user()
+    u.hp=100
+    u.battle_score=0
+    db.session.commit()
+    return jsonify({'ok':True,'hp':u.hp,'battle_score':u.battle_score})
 
 @app.post('/api/quiz/finish')
 @login_required
 def quiz_finish():
     u=current_user(); data=request.get_json() or {}; event_id=str(data.get('event_id','')).strip(); mode=str(data.get('mode','ai'))
     if mode not in ('ai','real'): mode='ai'
-    hp=max(0,min(100,int(data.get('hp',u.hp))))
-    u.hp=hp
-    earned=(hp*15)//100
-    if add_score(u,earned,f'知識王{("AI" if mode=="ai" else "真人")}對戰結算（{hp} HP）',event_id):
-        if bool(data.get('win')): u.wins+=1
+    battle_score=max(0,int(data.get('battle_score',0)))
+    won=bool(data.get('win'))
+    # 勝者：本場總得分 100% 轉成 HP；敗者：總得分 50% 轉成 HP。
+    earned_hp=battle_score if won else battle_score//2
+    u.battle_score=battle_score
+    u.hp=max(0,u.hp)+earned_hp
+    # 150 HP = 1 班級積分；HP 不足 150 的部分保留。
+    points_from_hp=u.hp//150
+    if points_from_hp:
+        u.hp=u.hp%150
+        add_score(u,points_from_hp,f'知識王{("AI" if mode=="ai" else "真人")}對戰 HP 兌換（{points_from_hp} 分）',event_id+':hp')
+    if add_score(u,0,f'知識王{("AI" if mode=="ai" else "真人")}對戰紀錄',event_id):
+        if won: u.wins+=1
         else: u.losses+=1
-        db.session.commit()
-        return jsonify({'ok':True,'earned':earned,'score':u.score,'hp':u.hp})
-    return jsonify({'ok':True,'earned':0,'score':u.score,'hp':u.hp,'duplicate':True})
+    db.session.commit()
+    return jsonify({'ok':True,'battle_score':battle_score,'earned_hp':earned_hp,'score':u.score,'hp':u.hp,'points_from_hp':points_from_hp,'win':won})
+
+def speed_points(elapsed):
+    # 10 分為基本分；越快答對，速度加分越高。超過 12 秒仍保留基本 10 分。
+    try: t=max(0.0,float(elapsed))
+    except Exception: t=12.0
+    bonus=max(0,min(10,round((12.0-t)*10/12.0)))
+    return 10+bonus
 
 @app.post('/api/validate')
 @login_required
@@ -208,10 +251,12 @@ def validate_answer():
     q=next((x for x in QUESTIONS if x['id']==qid),None)
     if not q: return jsonify({'ok':False,'error':'題目不存在'}),404
     is_correct=choice==q['correct']
+    elapsed=data.get('elapsed',12)
+    gained=speed_points(elapsed) if is_correct else 0
     if not is_correct: u.hp=max(0,u.hp-10)
     db.session.add(AnswerRecord(student_id=u.id,question_id=q['id'],category=q['category'],question=q['question'],selected_choice=choice,correct_choice=q['correct'],is_correct=is_correct))
     db.session.commit()
-    return jsonify({'ok':True,'correct':is_correct,'hp':u.hp})
+    return jsonify({'ok':True,'correct':is_correct,'hp':u.hp,'gained':gained,'elapsed':float(elapsed) if str(elapsed).replace('.','',1).isdigit() else 12})
 
 @app.post('/api/rooms')
 @login_required
@@ -251,9 +296,9 @@ def start_room(code):
     u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
     if not r or r.host_id!=u.id: return jsonify({'ok':False,'error':'只有房主可以開始'}),403
     if RoomPlayer.query.filter_by(room_id=r.id).count()<2: return jsonify({'ok':False,'error':'至少需要兩位玩家'}),400
-    r.status='playing'; r.current_index=0; r.started_at=datetime.now(timezone.utc)
+    r.status='playing'; r.current_index=0; r.started_at=datetime.now(timezone.utc); r.question_started_at=datetime.now(timezone.utc)
     for p in RoomPlayer.query.filter_by(room_id=r.id).all():
-        s=db.session.get(Student,p.student_id); s.hp=100; p.answered_index=-1; p.correct_count=0
+        s=db.session.get(Student,p.student_id); s.hp=100; p.answered_index=-1; p.correct_count=0; p.battle_score=0
     db.session.commit()
     return jsonify({'ok':True,'room':room_state(r)})
 @app.get('/api/rooms/<code>/question')
@@ -277,8 +322,10 @@ def room_answer(code):
     if p.answered_index==idx: return jsonify({'ok':True,'duplicate':True,'correct_count':p.correct_count})
     q=next((x for x in QUESTIONS if x['id']==ids[idx]),None)
     correct=(choice==q['correct'])
+    elapsed=(datetime.now(timezone.utc)- (r.question_started_at or datetime.now(timezone.utc))).total_seconds()
+    gained=speed_points(elapsed) if correct else 0
     if not correct: u.hp=max(0,u.hp-10)
-    if correct: p.correct_count+=1
+    if correct: p.correct_count+=1; p.battle_score+=gained
     p.answered_index=idx; db.session.commit()
     # advance when all players answered
     players=RoomPlayer.query.filter_by(room_id=r.id).all()
@@ -296,7 +343,7 @@ def room_answer(code):
                 else: s.losses+=1
             db.session.commit()
         else: db.session.commit()
-    return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'hp':u.hp,'room':room_state(r)})
+    return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'battle_score':p.battle_score,'hp':u.hp,'room':room_state(r)})
 
 @app.get('/api/prizes')
 @login_required
