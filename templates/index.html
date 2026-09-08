@@ -1,1 +1,87 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>班級知識王積分系統 v1</title><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap"><div class="card login"><h1>🏆 班級知識王</h1><p class="muted" style="text-align:center">全新獨立系統 v1</p><div id="msg"></div><label>帳號</label><input id="account" class="field" placeholder="學號 / teacher / teacher01"><label>密碼</label><input id="password" class="field" type="password" placeholder="四碼密碼"><button class="btn" style="width:100%" onclick="login()">登入</button><p class="muted" style="font-size:13px">教師：teacher / 1930　｜　小明：teacher01 / 1930</p></div></div><script>async function login(){let r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:account.value,password:password.value})});let d=await r.json();if(!r.ok){msg.innerHTML='<div class="notice err">'+d.error+'</div>';return}location.href=d.user.role==='teacher'?'/teacher':'/student'}</script></body></html>
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>學生知識王｜504 班學習挑戰平台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-brand-panel">
+      <div class="crown">👑</div>
+      <h1>學生知識王</h1>
+      <p class="brand-subtitle">504 班學習挑戰平台</p>
+
+      <div class="feature-list">
+        <div class="feature"><span>🤖</span><div><b>AI 智慧挑戰</b><small>答題越快，得分越高</small></div></div>
+        <div class="feature"><span>🏆</span><div><b>班級榮譽榜</b><small>即時看看自己的排名</small></div></div>
+        <div class="feature"><span>🎁</span><div><b>幸運抽獎</b><small>用班級積分抽取寶物卡</small></div></div>
+      </div>
+    </section>
+
+    <section class="login-card">
+      <div class="login-heading">
+        <div class="login-icon">🔑</div>
+        <div>
+          <h2>登入系統</h2>
+          <p>輸入你的帳號與密碼開始挑戰</p>
+        </div>
+      </div>
+
+      <div id="msg"></div>
+
+      <label for="account">帳號</label>
+      <input id="account" class="field login-field" autocomplete="username" placeholder="請輸入學號或教師帳號">
+
+      <label for="password">密碼</label>
+      <input id="password" class="field login-field" type="password" autocomplete="current-password" placeholder="請輸入密碼">
+
+      <button class="btn login-btn" onclick="login()">登入知識王</button>
+
+      <div class="login-note">
+        <span>👨‍🎓 學生</span> 使用個人學號登入
+        <span class="divider">｜</span>
+        <span>👨‍🏫 教師</span> 使用教師帳號登入
+      </div>
+    </section>
+  </main>
+
+  <footer class="login-footer">👑 學生知識王　｜　學習 × 挑戰 × 榮譽</footer>
+
+<script>
+const accountInput=document.getElementById('account');
+const passwordInput=document.getElementById('password');
+const msg=document.getElementById('msg');
+
+async function login(){
+  const account=accountInput.value.trim();
+  const password=passwordInput.value;
+  if(!account || !password){
+    msg.innerHTML='<div class="notice err">請輸入帳號與密碼。</div>';
+    return;
+  }
+  const btn=document.querySelector('.login-btn');
+  btn.disabled=true;
+  btn.textContent='登入中…';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account,password})});
+    const d=await r.json();
+    if(!r.ok){
+      msg.innerHTML='<div class="notice err">'+(d.error||'登入失敗，請確認帳號與密碼。')+'</div>';
+      return;
+    }
+    location.href=d.user.role==='teacher'?'/teacher':'/student';
+  }catch(e){
+    msg.innerHTML='<div class="notice err">目前無法連線，請稍後再試。</div>';
+  }finally{
+    btn.disabled=false;
+    btn.textContent='登入知識王';
+  }
+}
+
+passwordInput.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
+accountInput.addEventListener('keydown',e=>{if(e.key==='Enter')passwordInput.focus()});
+</script>
+</body>
+</html>
