@@ -188,6 +188,23 @@ def me():
     return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
 @app.get('/api/leaderboard')
 def leaderboard(): return jsonify({'ok':True,'items':leaderboard_data()})
+
+@app.get('/api/display/leaderboard')
+def display_leaderboard():
+    # 大螢幕專用資料：保留座號對應頭像，並帶出尚未兌換的寶物卡。
+    rows=Student.query.filter(Student.role=='student').order_by(Student.score.desc(),Student.seat.asc()).all()
+    items=[]
+    for i,s in enumerate(rows,1):
+        owned=(db.session.query(PrizeDraw,PrizeCard)
+               .join(PrizeCard,PrizeDraw.card_id==PrizeCard.id)
+               .filter(PrizeDraw.student_id==s.id,PrizeDraw.status=='pending')
+               .order_by(PrizeDraw.created_at.desc()).all())
+        items.append({
+            'rank':i,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'hp':s.hp,
+            'wins':s.wins,'losses':s.losses,
+            'cards':[{'id':d.id,'name':c.name,'description':c.description} for d,c in owned]
+        })
+    return jsonify({'ok':True,'items':items})
 @app.get('/api/questions')
 @login_required
 def questions():
