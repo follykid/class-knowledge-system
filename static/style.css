@@ -36,3 +36,14 @@
 
 /* 大螢幕排名：照片＋積分＋寶物卡 */
 .display-page{background:radial-gradient(circle at top,#242932 0,#101214 55%);min-height:100vh}.display-wrap{max-width:1500px;margin:auto;padding:24px 28px}.display-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.display-title{font-size:clamp(28px,3vw,44px);font-weight:900}.display-subtitle{color:#aeb5bd;margin-top:4px;font-size:18px}.display-full{border:0;border-radius:12px;padding:11px 16px;background:#30343a;color:#fff;font-weight:800;cursor:pointer}.display-status{text-align:right;color:#8f98a3;font-size:14px;margin-bottom:12px}.display-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.display-card{position:relative;display:flex;align-items:center;gap:18px;min-height:145px;padding:18px 20px;background:#1a1d21;border:1px solid #30343a;border-radius:20px;box-shadow:0 8px 28px #0006}.display-card.rank-1{grid-column:span 1;border-width:2px}.display-avatar{width:92px;height:92px;flex:0 0 92px;border-radius:50%;object-fit:cover;border:3px solid #5b626c}.rank-badge{width:54px;text-align:center;font-size:22px;font-weight:900}.display-seat{font-size:14px;color:#8f98a3}.display-name{font-size:24px;font-weight:900;margin:2px 0}.display-score{font-size:30px;font-weight:900}.display-score span{font-size:15px;color:#aeb5bd;font-weight:700}.display-cards{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.treasure,.no-card{font-size:13px;padding:5px 9px;border-radius:999px;background:#292d33;color:#e9edf1}.no-card{color:#7f8791}@media(max-width:900px){.display-grid{grid-template-columns:1fr}.display-wrap{padding:16px}.display-avatar{width:76px;height:76px;flex-basis:76px}.display-name{font-size:21px}.display-score{font-size:26px}}
+
+/* v1.2：學生首頁恢復舊版留言板 */
+.message-card { min-height: 420px; }
+.message-subtitle { font-size: .8rem; font-weight: normal; }
+.old-message-box { height: 300px; overflow-y: auto; overflow-x: hidden; padding: 10px 4px; box-sizing: border-box; }
+.message-row { margin-bottom: 8px; border-bottom: 1px solid #222; padding: 0 4px 6px; word-break: break-word; line-height: 1.6; }
+.message-user { color: #4caf50; }
+.message-time { color: #888; margin-left: 8px; font-size: .85em; white-space: nowrap; }
+.message-input { display: flex; gap: 5px; margin-top: 8px; }
+.message-input input { flex: 1; min-width: 0; padding: 10px; border-radius: 8px; background: #333; border: none; color: white; box-sizing: border-box; }
+.message-input .btn { white-space: nowrap; }

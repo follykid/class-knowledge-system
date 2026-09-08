@@ -36,6 +36,13 @@ class ScoreEvent(db.Model):
     reason=db.Column(db.String(120),nullable=False)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
 
+class Message(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
+    user_name=db.Column(db.String(50),nullable=False)
+    text=db.Column(db.String(300),nullable=False)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+
 class AnswerRecord(db.Model):
     id=db.Column(db.Integer,primary_key=True)
     student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
@@ -188,6 +195,27 @@ def me():
     return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
 @app.get('/api/leaderboard')
 def leaderboard(): return jsonify({'ok':True,'items':leaderboard_data()})
+@app.get('/api/messages')
+@login_required
+def messages():
+    rows=Message.query.order_by(Message.created_at.desc(),Message.id.desc()).limit(100).all()
+    return jsonify({'ok':True,'items':[
+        {'id':m.id,'user':m.user_name,'text':m.text,'timestamp':int(m.created_at.timestamp()*1000) if m.created_at else 0}
+        for m in rows
+    ]})
+
+@app.post('/api/messages')
+@login_required
+def post_message():
+    u=current_user()
+    data=request.get_json() or {}
+    text=str(data.get('text','')).strip()
+    if not text: return jsonify({'ok':False,'error':'留言不能是空白'}),400
+    if len(text)>300: return jsonify({'ok':False,'error':'留言最多 300 字'}),400
+    m=Message(student_id=u.id,user_name=u.name,text=text)
+    db.session.add(m); db.session.commit()
+    return jsonify({'ok':True,'item':{'id':m.id,'user':m.user_name,'text':m.text,'timestamp':int(m.created_at.timestamp()*1000)}})
+
 @app.get('/api/display/leaderboard')
 def display_leaderboard():
     # 大螢幕專用資料：排名、座號、積分與尚未兌換的寶物卡。
