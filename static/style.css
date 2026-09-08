@@ -33,3 +33,31 @@
 .login-footer{text-align:center;color:#777f88;font-size:13px;padding:0 18px 24px}
 @media(max-width:820px){.login-shell{grid-template-columns:1fr;max-width:520px;padding:28px 0}.login-brand-panel{text-align:center;padding:10px}.feature-list{margin:auto;text-align:left}.brand-subtitle{margin-bottom:20px}.crown{font-size:52px}.login-brand-panel h1{font-size:44px}.login-card{padding:25px}.login-footer{padding-bottom:18px}}
 @media(max-width:480px){.login-shell{width:calc(100% - 22px)}.login-card{padding:21px}.login-brand-panel h1{font-size:37px}.brand-subtitle{font-size:17px}.feature{padding:12px}.feature small{font-size:13px}.login-note .divider{display:none}.login-note span{display:inline-block;margin:0 3px}}
+
+/* ===== v1.2 大螢幕榮譽榜：照片＋積分＋寶物卡 ===== */
+.display-page{min-height:100vh;background:radial-gradient(circle at 50% -15%,#303741 0,#171a1e 42%,#0d0f11 100%);color:#f6f7f9;overflow-x:hidden}
+.display-shell{width:min(1500px,calc(100% - 34px));margin:0 auto;padding:24px 0 34px}
+.display-header{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;padding:4px 4px 18px;border-bottom:1px solid #343941;margin-bottom:20px}
+.display-title{font-size:clamp(30px,3.2vw,48px);font-weight:900;letter-spacing:1px}
+.display-subtitle{margin-top:7px;color:#aeb5bd;font-size:clamp(14px,1.3vw,19px);font-weight:700}
+.display-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.display-updated{color:#8f98a3;font-size:13px;white-space:nowrap}
+.display-btn{border:1px solid #444b55;background:#23272d;color:#fff;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
+.display-btn:hover{background:#30353d}
+.display-board{display:grid;gap:20px}
+.display-loading{min-height:55vh;display:grid;place-items:center;font-size:28px;color:#aeb5bd}
+.podium{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.podium-card{position:relative;overflow:hidden;text-align:center;background:linear-gradient(180deg,#242930,#1a1d21);border:1px solid #3a4049;border-radius:22px;padding:22px 16px 18px;box-shadow:0 12px 34px #0007}
+.podium-card:before{content:"";position:absolute;left:0;right:0;top:0;height:5px;background:#555}
+.podium-card.p1{border-color:#c9a227}.podium-card.p1:before{background:#e5c34f}.podium-card.p2{border-color:#87909a}.podium-card.p2:before{background:#bfc5cb}.podium-card.p3{border-color:#986d48}.podium-card.p3:before{background:#c28a5a}
+.podium-rank{font-size:34px;line-height:1;margin:2px 0 8px}
+.display-avatar{object-fit:cover;border-radius:50%;border:3px solid #515965;background:#111317;box-shadow:0 5px 18px #0008}
+.podium-avatar{width:clamp(100px,9vw,148px);height:clamp(100px,9vw,148px)}
+.podium-seat{color:#9ea7b1;font-size:14px;margin-top:8px}.podium-name{font-size:clamp(22px,2vw,31px);font-weight:900;margin-top:3px}.podium-score{font-size:clamp(30px,2.8vw,43px);font-weight:900;color:#ffcf33;margin:7px 0 10px}.podium-score small{font-size:.42em;color:#d7dbe0}
+.podium-cards{min-height:42px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
+.rank-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.rank-card{display:flex;align-items:center;gap:14px;min-width:0;background:#1a1d21;border:1px solid #30343a;border-radius:16px;padding:12px 14px;box-shadow:0 7px 22px #0005}
+.rank-number{width:38px;text-align:center;font-size:22px;font-weight:900;color:#aeb5bd;flex-shrink:0}.rank-avatar{width:64px;height:64px;flex-shrink:0}.rank-main{min-width:0;flex:1}.rank-name-row{display:flex;align-items:center;gap:9px;font-size:20px}.rank-seat{font-size:12px;color:#929ba6;background:#292e35;border-radius:999px;padding:4px 7px}.rank-score{margin-top:2px;color:#ffcf33;font-size:17px}.rank-score b{font-size:24px}.rank-treasures{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;min-height:27px}
+.treasure-card{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:4px 7px;border-radius:8px;background:#282d34;border:1px solid #3a414a;color:#e8ebee;font-size:12px;font-weight:800;line-height:1.2}.treasure-icon{font-size:14px}.no-card{display:inline-flex;align-items:center;padding:4px 7px;color:#737c87;font-size:12px}
+@media(max-width:900px){.display-shell{width:min(760px,calc(100% - 20px));padding-top:15px}.display-header{align-items:flex-start;flex-direction:column}.display-actions{width:100%;justify-content:space-between}.podium{grid-template-columns:1fr}.podium-card{padding:16px}.podium-avatar{width:92px;height:92px}.rank-grid{grid-template-columns:1fr}}
+@media(min-width:1500px){.rank-grid{grid-template-columns:repeat(3,1fr)}.rank-card{padding:10px 12px}.rank-avatar{width:58px;height:58px}.rank-name-row{font-size:18px}.rank-score b{font-size:21px}.treasure-card{font-size:11px}}
