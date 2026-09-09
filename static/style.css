@@ -47,3 +47,5 @@
 .message-input { display: flex; gap: 5px; margin-top: 8px; }
 .message-input input { flex: 1; min-width: 0; padding: 10px; border-radius: 8px; background: #333; border: none; color: white; box-sizing: border-box; }
 .message-input .btn { white-space: nowrap; }
+
+.exchange-card{margin-bottom:18px;background:#20242a}.exchange-head h2{margin:0 0 4px}.exchange-head p{margin:0}.exchange-buttons{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.exchange-buttons .btn{min-height:50px;font-size:16px}.exchange-msg{min-height:22px;margin-top:10px;text-align:center}@media(max-width:760px){.exchange-buttons{grid-template-columns:1fr}}

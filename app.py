@@ -251,6 +251,18 @@ def hp_exchange():
     db.session.commit()
     return jsonify({'ok':True,'score':u.score,'hp':u.hp,'added_hp':points*10})
 
+@app.post('/api/hp/to_score')
+@login_required
+def hp_to_score():
+    u=current_user()
+    hp_points=max(0,int(u.hp)//150)
+    if hp_points < 1:
+        return jsonify({'ok':False,'error':'HP 不足 150，無法兌換 1 分'}),400
+    u.hp -= hp_points * 150
+    add_score(u, hp_points, f'HP 兌換積分（{hp_points} 分）', 'hp-to-score:'+str(uuid.uuid4()))
+    db.session.commit()
+    return jsonify({'ok':True,'score':u.score,'hp':u.hp,'added_score':hp_points})
+
 @app.post('/api/quiz/start')
 @login_required
 def quiz_start():
