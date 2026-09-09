@@ -19,3 +19,11 @@
 ## Render
 Build Command: `pip install -r requirements.txt`
 Start Command: `gunicorn app:app`
+
+## v1.3 題庫管理
+- 教師後台可手動新增題目。
+- 支援 CSV 批次匯入，格式：題型、分類、秒數、題目、選項一、選項二、選項三、選項四、正確答案。
+- 是非題使用 O / X。
+- 題庫資料存入 PostgreSQL，重新部署不會因程式檔案變動而消失。
+- 可搜尋、依分類篩選、刪除（停用）與匯出 CSV。
+- 舊有 quiz.json 會在首次建立題庫資料表時自動匯入。

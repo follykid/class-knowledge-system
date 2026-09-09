@@ -1,4 +1,4 @@
-import os, json, random, string, uuid
+import os, json, random, string, uuid, csv, io
 from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -43,6 +43,18 @@ class Message(db.Model):
     user_name=db.Column(db.String(50),nullable=False)
     text=db.Column(db.String(300),nullable=False)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+
+class QuestionBank(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    qtype=db.Column(db.String(20),nullable=False,default='選擇題')
+    category=db.Column(db.String(80),nullable=False,default='未分類')
+    seconds=db.Column(db.Integer,nullable=False,default=60)
+    question=db.Column(db.Text,nullable=False)
+    options_json=db.Column(db.Text,nullable=False,default='[]')
+    correct=db.Column(db.Integer,nullable=False,default=1)
+    active=db.Column(db.Boolean,default=True)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+    updated_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),onupdate=lambda:datetime.now(timezone.utc))
 
 class AnswerRecord(db.Model):
     id=db.Column(db.Integer,primary_key=True)
@@ -110,6 +122,52 @@ with open(os.path.join(BASE_DIR,'quiz.json'),encoding='utf-8') as f: QUESTIONS=j
 
 ROSTER=[(1, '黃聰', '111061', '0924'), (2, '昱綸', '111201', '1031'), (3, '靖喬', '111095', '1118'), (4, '侑辰', '111038', '0107'), (5, '楷欣', '111039', '0111'), (6, '芸霆', '111128', '0126'), (7, '俊賀', '111040', '0129'), (8, '品睿', '111070', '0201'), (9, '柏甫', '111071', '0227'), (10, '威碩', '111164', '0502'), (11, '雋書', '111074', '0612'), (12, '莫凡', '111166', '0703'), (13, '祐廷', '111137', '0723'), (14, '詠琂', '111139', '0818'), (15, '可荺', '111019', '0924'), (16, '張惟', '111079', '1015'), (17, '品真', '111112', '1108'), (18, '彥伃', '111115', '1223'), (19, '羽芯', '111052', '0125'), (20, '紫瑜', '111053', '0205'), (21, '翊榛', '111117', '0217'), (22, '侑璇', '111054', '0218'), (23, '芷軒', '111143', '0310'), (24, '芯妤', '111057', '0402'), (25, '毓琳', '111147', '0520'), (26, '予甯', '111150', '0710')]
 
+def question_dict(q):
+    return {
+        'id': q.id,
+        'qtype': q.qtype,
+        'category': q.category,
+        'seconds': q.seconds,
+        'question': q.question,
+        'options': json.loads(q.options_json or '[]'),
+        'correct': q.correct,
+        'active': bool(q.active),
+    }
+
+def active_questions():
+    rows=QuestionBank.query.filter_by(active=True).order_by(QuestionBank.id).all()
+    return [question_dict(q) for q in rows]
+
+def next_question_id():
+    last=db.session.query(db.func.max(QuestionBank.id)).scalar()
+    return int(last or 0)+1
+
+def normalize_question_input(data):
+    qtype=str(data.get('qtype',data.get('題型','選擇題'))).strip() or '選擇題'
+    category=str(data.get('category',data.get('分類','未分類'))).strip() or '未分類'
+    question=str(data.get('question',data.get('題目',''))).strip()
+    try: seconds=max(1,min(600,int(data.get('seconds',data.get('秒數',60)))))
+    except Exception: seconds=60
+    if 'options' in data and isinstance(data.get('options'),list):
+        options=[str(x).strip() for x in data.get('options')]
+    else:
+        options=[str(data.get(f'option{i}',data.get(f'選項{i}',''))).strip() for i in range(1,5)]
+    if qtype in ('是非題','是非','OX','O/X'):
+        qtype='是非題'; options=['O','X']
+    else:
+        qtype='選擇題'
+        options=options[:4]
+        while len(options)<4: options.append('')
+    options=[x for x in options if x!='']
+    try: correct=int(data.get('correct',data.get('正確答案',1)))
+    except Exception: correct=1
+    if not question: raise ValueError('題目不能是空白')
+    if qtype=='是非題':
+        correct=1 if correct not in (1,2) else correct
+    elif not (1 <= correct <= len(options) <= 4):
+        raise ValueError('正確答案編號或選項數量不正確')
+    return qtype,category,seconds,question,options,correct
+
 def seed():
     db.create_all()
     # v1.1 -> v1.2 的輕量資料庫升級：Render 若已有舊 SQLite/Postgres，補上新欄位。
@@ -139,6 +197,13 @@ def seed():
     if PrizeCard.query.count()==0:
         for name,weight,desc in PRIZE_CARDS:
             db.session.add(PrizeCard(name=name,weight=weight,description=desc))
+    if QuestionBank.query.count()==0:
+        for q in QUESTIONS:
+            db.session.add(QuestionBank(
+                id=int(q['id']), qtype='選擇題' if len(q.get('options',[]))>=3 else '是非題',
+                category=str(q.get('category','未分類')), seconds=60,
+                question=str(q.get('question','')), options_json=json.dumps(q.get('options',[]),ensure_ascii=False),
+                correct=int(q.get('correct',1)), active=True))
     db.session.commit()
 
 def current_user():
@@ -237,9 +302,10 @@ def display_leaderboard():
 @login_required
 def questions():
     n=min(max(int(request.args.get('count',10)),1),20)
-    chosen=random.sample(QUESTIONS,min(n,len(QUESTIONS)))
-    # never expose answer before submission
-    return jsonify({'ok':True,'questions':[{'id':q['id'],'category':q['category'],'question':q['question'],'options':q['options']} for q in chosen]})
+    bank=active_questions()
+    chosen=random.sample(bank,min(n,len(bank))) if bank else []
+    return jsonify({'ok':True,'questions':[{k:q[k] for k in ('id','qtype','category','seconds','question','options')} for q in chosen]})
+
 @app.post('/api/hp/exchange')
 @login_required
 def hp_exchange():
@@ -305,7 +371,8 @@ def speed_points(elapsed):
 @login_required
 def validate_answer():
     u=current_user(); data=request.get_json() or {}; qid=int(data.get('id',0)); choice=int(data.get('choice',0))
-    q=next((x for x in QUESTIONS if x['id']==qid),None)
+    qobj=db.session.get(QuestionBank,qid)
+    q=question_dict(qobj) if qobj and qobj.active else None
     if not q: return jsonify({'ok':False,'error':'題目不存在'}),404
     is_correct=choice==q['correct']
     elapsed=data.get('elapsed',12)
@@ -323,7 +390,7 @@ def create_room():
     for _ in range(20):
         code=''.join(random.choices(string.ascii_uppercase+string.digits,k=5))
         if not Room.query.filter_by(code=code).first(): break
-    qs=random.sample(QUESTIONS,min(10,len(QUESTIONS)))
+    bank=active_questions(); qs=random.sample(bank,min(10,len(bank)))
     room=Room(code=code,host_id=u.id,question_ids=json.dumps([q['id'] for q in qs]),status='waiting')
     db.session.add(room); db.session.flush(); db.session.add(RoomPlayer(room_id=room.id,student_id=u.id)); db.session.commit()
     return jsonify({'ok':True,'room':room_state(room)})
@@ -365,7 +432,7 @@ def room_question(code):
     if not r: return jsonify({'ok':False,'error':'找不到房間'}),404
     ids=json.loads(r.question_ids or '[]')
     if r.current_index>=len(ids): return jsonify({'ok':True,'done':True})
-    q=next((x for x in QUESTIONS if x['id']==ids[r.current_index]),None)
+    qobj=db.session.get(QuestionBank,ids[r.current_index]); q=question_dict(qobj) if qobj and qobj.active else None
     return jsonify({'ok':True,'index':r.current_index,'question':{'id':q['id'],'category':q['category'],'question':q['question'],'options':q['options']}})
 @app.post('/api/rooms/<code>/answer')
 @login_required
@@ -377,7 +444,7 @@ def room_answer(code):
     data=request.get_json() or {}; idx=int(data.get('index',-1)); choice=int(data.get('choice',0)); ids=json.loads(r.question_ids or '[]')
     if idx!=r.current_index: return jsonify({'ok':False,'error':'題目已切換'}),409
     if p.answered_index==idx: return jsonify({'ok':True,'duplicate':True,'correct_count':p.correct_count})
-    q=next((x for x in QUESTIONS if x['id']==ids[idx]),None)
+    qobj=db.session.get(QuestionBank,ids[idx]); q=question_dict(qobj) if qobj and qobj.active else None
     correct=(choice==q['correct'])
     elapsed=(datetime.now(timezone.utc)- (r.question_started_at or datetime.now(timezone.utc))).total_seconds()
     gained=speed_points(elapsed) if correct else 0
@@ -453,6 +520,98 @@ def admin_students():
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
     return jsonify({'ok':True,'items':[{'id':s.id,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'wins':s.wins,'losses':s.losses} for s in Student.query.filter_by(role='student').order_by(Student.seat).all()]})
 
+@app.get('/api/admin/questions')
+def admin_questions():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    category=str(request.args.get('category','')).strip()
+    keyword=str(request.args.get('q','')).strip()
+    query=QuestionBank.query.filter_by(active=True)
+    if category: query=query.filter(QuestionBank.category==category)
+    if keyword: query=query.filter(QuestionBank.question.ilike(f'%{keyword}%'))
+    rows=query.order_by(QuestionBank.id.desc()).limit(500).all()
+    return jsonify({'ok':True,'count':QuestionBank.query.filter_by(active=True).count(),'items':[question_dict(q) for q in rows], 'categories':[x[0] for x in db.session.query(QuestionBank.category).filter_by(active=True).distinct().order_by(QuestionBank.category).all()]})
+
+@app.post('/api/admin/questions')
+def admin_add_question():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    try:
+        qtype,category,seconds,question,options,correct=normalize_question_input(request.get_json() or {})
+    except ValueError as e:
+        return jsonify({'ok':False,'error':str(e)}),400
+    q=QuestionBank(id=next_question_id(),qtype=qtype,category=category,seconds=seconds,question=question,options_json=json.dumps(options,ensure_ascii=False),correct=correct,active=True)
+    db.session.add(q); db.session.commit()
+    return jsonify({'ok':True,'question':question_dict(q)})
+
+@app.post('/api/admin/questions/import')
+def admin_import_questions():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    if 'file' not in request.files: return jsonify({'ok':False,'error':'請選擇 CSV 檔案'}),400
+    file=request.files['file']
+    if not file.filename.lower().endswith('.csv'): return jsonify({'ok':False,'error':'只接受 CSV 檔案'}),400
+    raw=file.read()
+    text=None
+    for enc in ('utf-8-sig','utf-8','cp950','big5'):
+        try: text=raw.decode(enc); break
+        except UnicodeDecodeError: continue
+    if text is None: return jsonify({'ok':False,'error':'CSV 編碼無法辨識，請使用 UTF-8'}),400
+    reader=csv.DictReader(io.StringIO(text))
+    required={'題目','選項一','選項二','正確答案'}
+    if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
+        return jsonify({'ok':False,'error':'CSV 欄位需至少包含：題目、選項一、選項二、正確答案；建議使用系統提供的完整格式'}),400
+    imported=[]; skipped=[]; errors=[]
+    existing={(q.category.strip(),q.question.strip()) for q in QuestionBank.query.filter_by(active=True).all()}
+    nid=next_question_id()
+    for lineno,row in enumerate(reader,start=2):
+        try:
+            data={
+                '題型':row.get('題型','選擇題'), '分類':row.get('分類','未分類'), '秒數':row.get('秒數','60'),
+                '題目':row.get('題目',''), '選項一':row.get('選項一',''), '選項二':row.get('選項二',''),
+                '選項三':row.get('選項三',''), '選項四':row.get('選項四',''), '正確答案':row.get('正確答案','1')
+            }
+            qtype,category,seconds,question,options,correct=normalize_question_input(data)
+            key=(category,question)
+            if key in existing:
+                skipped.append({'line':lineno,'reason':'已有相同分類與題目','question':question})
+                continue
+            q=QuestionBank(id=nid,qtype=qtype,category=category,seconds=seconds,question=question,options_json=json.dumps(options,ensure_ascii=False),correct=correct,active=True)
+            db.session.add(q); imported.append(q); existing.add(key); nid+=1
+        except Exception as e:
+            errors.append({'line':lineno,'error':str(e)})
+    if errors and not imported:
+        db.session.rollback()
+        return jsonify({'ok':False,'error':'沒有成功匯入任何題目','imported':0,'skipped':len(skipped),'errors':errors[:20]}),400
+    db.session.commit()
+    return jsonify({'ok':True,'imported':len(imported),'skipped':len(skipped),'errors':errors[:20],'total':QuestionBank.query.filter_by(active=True).count()})
+
+@app.delete('/api/admin/questions/<int:q_id>')
+def admin_delete_question(q_id):
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    q=db.session.get(QuestionBank,q_id)
+    if not q or not q.active: return jsonify({'ok':False,'error':'題目不存在'}),404
+    q.active=False; db.session.commit()
+    return jsonify({'ok':True})
+
+@app.get('/api/admin/questions/export')
+def admin_export_questions():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    rows=QuestionBank.query.filter_by(active=True).order_by(QuestionBank.id).all()
+    output=io.StringIO(newline='')
+    writer=csv.writer(output)
+    writer.writerow(['題型','分類','秒數','題目','選項一','選項二','選項三','選項四','正確答案'])
+    for q in rows:
+        opts=json.loads(q.options_json or '[]')
+        opts=(opts+['','','',''])[:4]
+        writer.writerow([q.qtype,q.category,q.seconds,q.question,*opts,q.correct])
+    from flask import Response
+    resp=Response('﻿'+output.getvalue(),mimetype='text/csv; charset=utf-8')
+    resp.headers['Content-Disposition']='attachment; filename=class_knowledge_question_bank.csv'
+    return resp
+
 @app.get('/api/admin/errors')
 def admin_errors():
     u=current_user()
@@ -461,7 +620,7 @@ def admin_errors():
     return jsonify({'ok':True,'items':[{'question_id':r[0],'question':r[1],'category':r[2],'attempts':int(r[3] or 0),'wrong':int(r[4] or 0)} for r in rows if int(r[4] or 0)>0]})
 
 @app.get('/api/health')
-def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.1'})
+def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.3'})
 
 @app.context_processor
 def ctx(): return {'year':datetime.now().year}
