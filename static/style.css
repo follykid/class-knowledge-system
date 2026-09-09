@@ -49,3 +49,12 @@
 .message-input .btn { white-space: nowrap; }
 
 .exchange-card{margin-bottom:18px;background:#20242a}.exchange-head h2{margin:0 0 4px}.exchange-head p{margin:0}.exchange-buttons{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.exchange-buttons .btn{min-height:50px;font-size:16px}.exchange-msg{min-height:22px;margin-top:10px;text-align:center}@media(max-width:760px){.exchange-buttons{grid-template-columns:1fr}}
+
+/* 學生首頁：寶物卡移至個人資料區中央 */
+.profile { gap: 18px; }
+.profile-info { min-width: 150px; }
+.treasure-summary { flex: 1; min-width: 280px; align-self: stretch; display: flex; flex-direction: column; justify-content: center; padding: 8px 18px; border-left: 1px solid rgba(255,255,255,.10); border-right: 1px solid rgba(255,255,255,.10); }
+.treasure-title { font-weight: 800; font-size: 17px; margin-bottom: 10px; }
+.top-inventory { display: flex; flex-wrap: wrap; gap: 7px; max-height: 72px; overflow: auto; align-items: center; }
+.treasure-chip { display: inline-flex; align-items: center; padding: 7px 10px; border-radius: 999px; background: rgba(255,193,7,.14); border: 1px solid rgba(255,193,7,.35); color: #ffd54a; font-weight: 700; font-size: 13px; white-space: nowrap; }
+@media (max-width: 900px) { .treasure-summary { border-left: 0; border-right: 0; border-top: 1px solid rgba(255,255,255,.10); border-bottom: 1px solid rgba(255,255,255,.10); padding: 12px 0; } .profile { flex-wrap: wrap; } }
