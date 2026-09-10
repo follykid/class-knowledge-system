@@ -321,10 +321,10 @@ def hp_exchange():
 @login_required
 def hp_to_score():
     u=current_user()
-    hp_points=max(0,int(u.hp)//150)
+    hp_points=max(0,int(u.hp)//1000)
     if hp_points < 1:
-        return jsonify({'ok':False,'error':'HP 不足 150，無法兌換 1 分'}),400
-    u.hp -= hp_points * 150
+        return jsonify({'ok':False,'error':'HP 不足 1000，無法兌換 1 分'}),400
+    u.hp -= hp_points * 1000
     add_score(u, hp_points, f'HP 兌換積分（{hp_points} 分）', 'hp-to-score:'+str(uuid.uuid4()))
     db.session.commit()
     return jsonify({'ok':True,'score':u.score,'hp':u.hp,'added_score':hp_points})
@@ -349,10 +349,10 @@ def quiz_finish():
     earned_hp=battle_score if won else battle_score//2
     u.battle_score=battle_score
     u.hp=max(0,u.hp)+earned_hp
-    # 150 HP = 1 班級積分；HP 不足 150 的部分保留。
-    points_from_hp=u.hp//150
+    # 1000 HP = 1 班級積分；HP 不足 1000 的部分保留。
+    points_from_hp=u.hp//1000
     if points_from_hp:
-        u.hp=u.hp%150
+        u.hp=u.hp%1000
         add_score(u,points_from_hp,f'知識王{("AI" if mode=="ai" else "真人")}對戰 HP 兌換（{points_from_hp} 分）',event_id+':hp')
     if add_score(u,0,f'知識王{("AI" if mode=="ai" else "真人")}對戰紀錄',event_id):
         if won: u.wins+=1
@@ -459,7 +459,7 @@ def room_answer(code):
             r.status='finished'
             for x in players:
                 s=db.session.get(Student,x.student_id); win=x.correct_count>=(sum(y.correct_count for y in players)-x.correct_count) if len(players)==2 else False
-                # 真人對戰結算：以個人剩餘 HP 換算班級積分（100 HP = 15 分）
+                # 真人對戰結算：以個人剩餘 HP 換算班級積分（1000 HP = 1 分）
                 event=f'room:{r.id}:player:{x.student_id}'
                 bonus=0
                 add_score(s,(max(0,min(100,s.hp))*15)//100,'知識王真人對戰 HP 結算',event)
