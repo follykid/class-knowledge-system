@@ -349,11 +349,8 @@ def quiz_finish():
     earned_hp=battle_score if won else battle_score//2
     u.battle_score=battle_score
     u.hp=max(0,u.hp)+earned_hp
-    # 1000 HP = 1 班級積分；HP 不足 1000 的部分保留。
-    points_from_hp=u.hp//1000
-    if points_from_hp:
-        u.hp=u.hp%1000
-        add_score(u,points_from_hp,f'知識王{("AI" if mode=="ai" else "真人")}對戰 HP 兌換（{points_from_hp} 分）',event_id+':hp')
+    # 不自動把 HP 換成班級積分；玩家必須在學生頁手動兌換。
+    points_from_hp=0
     if add_score(u,0,f'知識王{("AI" if mode=="ai" else "真人")}對戰紀錄',event_id):
         if won: u.wins+=1
         else: u.losses+=1
@@ -404,10 +401,43 @@ def rooms():
 def join_room(code):
     u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
     if not r or r.status!='waiting': return jsonify({'ok':False,'error':'房間不存在或已開始'}),404
-    if RoomPlayer.query.filter_by(room_id=r.id,student_id=u.id).first() is None:
+    existing=RoomPlayer.query.filter_by(room_id=r.id,student_id=u.id).first()
+    if existing is None:
         if RoomPlayer.query.filter_by(room_id=r.id).count()>=2: return jsonify({'ok':False,'error':'房間已滿'}),400
-        db.session.add(RoomPlayer(room_id=r.id,student_id=u.id)); db.session.commit()
+        db.session.add(RoomPlayer(room_id=r.id,student_id=u.id))
+        db.session.flush()
+    # 第二位玩家加入後立即開戰，不再需要房主另外按「開始對戰」。
+    players=RoomPlayer.query.filter_by(room_id=r.id).all()
+    if len(players)>=2:
+        r.status='playing'; r.current_index=0
+        r.started_at=datetime.now(timezone.utc); r.question_started_at=datetime.now(timezone.utc)
+        for p in players:
+            st=db.session.get(Student,p.student_id)
+            st.hp=100; p.answered_index=-1; p.correct_count=0; p.battle_score=0
+    db.session.commit()
     return jsonify({'ok':True,'room':room_state(r)})
+@app.post('/api/rooms/<code>/leave')
+@login_required
+def leave_room(code):
+    u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
+    if not r:
+        return jsonify({'ok':True,'gone':True})
+    p=RoomPlayer.query.filter_by(room_id=r.id,student_id=u.id).first()
+    if not p:
+        return jsonify({'ok':True,'room':room_state(r)})
+    db.session.delete(p); db.session.flush()
+    remaining=RoomPlayer.query.filter_by(room_id=r.id).all()
+    # 離開後沒有玩家：直接刪除空房間。
+    if not remaining:
+        db.session.delete(r)
+        db.session.commit()
+        return jsonify({'ok':True,'gone':True})
+    # 對戰中有人離開：剩下玩家的房間也結束，避免幽靈房間。
+    if r.status=='playing':
+        r.status='finished'
+    db.session.commit()
+    return jsonify({'ok':True,'gone':False,'room':room_state(r)})
+
 @app.get('/api/rooms/<code>')
 @login_required
 def get_room(code):
@@ -457,14 +487,17 @@ def room_answer(code):
         r.current_index+=1
         if r.current_index>=len(ids):
             r.status='finished'
+            # 真人對戰：以本場 battle_score 判定勝負；勝者獲得 100% 本場分數的 HP，
+            # 敗者獲得 50%。HP 不自動換成班級積分，必須手動兌換。
+            scores=[x.battle_score for x in players]
+            top=max(scores) if scores else 0
             for x in players:
-                s=db.session.get(Student,x.student_id); win=x.correct_count>=(sum(y.correct_count for y in players)-x.correct_count) if len(players)==2 else False
-                # 真人對戰結算：以個人剩餘 HP 換算班級積分（1000 HP = 1 分）
-                event=f'room:{r.id}:player:{x.student_id}'
-                bonus=0
-                add_score(s,(max(0,min(100,s.hp))*15)//100,'知識王真人對戰 HP 結算',event)
-                if bonus: s.wins+=1
-                else: s.losses+=1
+                s=db.session.get(Student,x.student_id)
+                won=(x.battle_score==top and top>0)
+                earned=x.battle_score if won else x.battle_score//2
+                s.hp += earned
+                if won: s.wins += 1
+                else: s.losses += 1
             db.session.commit()
         else: db.session.commit()
     return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'battle_score':p.battle_score,'hp':u.hp,'room':room_state(r)})
