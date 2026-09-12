@@ -676,8 +676,16 @@ def admin_export_questions():
 def admin_errors():
     u=current_user()
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
-    rows=(db.session.query(AnswerRecord.question_id,AnswerRecord.question,AnswerRecord.category,db.func.count(AnswerRecord.id).label('total'),db.func.sum(db.case((AnswerRecord.is_correct==False,1),else_=0)).label('wrong')).group_by(AnswerRecord.question_id,AnswerRecord.question,AnswerRecord.category).order_by(db.desc('wrong'),db.desc('total')).limit(30).all())
-    return jsonify({'ok':True,'items':[{'question_id':r[0],'question':r[1],'category':r[2],'attempts':int(r[3] or 0),'wrong':int(r[4] or 0)} for r in rows if int(r[4] or 0)>0]})
+    rows=(db.session.query(AnswerRecord.question_id,AnswerRecord.question,AnswerRecord.category,AnswerRecord.correct_choice,db.func.count(AnswerRecord.id).label('total'),db.func.sum(db.case((AnswerRecord.is_correct==False,1),else_=0)).label('wrong')).group_by(AnswerRecord.question_id,AnswerRecord.question,AnswerRecord.category,AnswerRecord.correct_choice).order_by(db.desc('wrong'),db.desc('total')).limit(30).all())
+    items=[]
+    for r in rows:
+        if int(r[5] or 0)<=0: continue
+        qobj=db.session.get(QuestionBank,r[0])
+        options=json.loads(qobj.options_json or '[]') if qobj else []
+        ci=int(r[3] or 0)
+        correct_answer=options[ci-1] if 1<=ci<=len(options) else str(ci)
+        items.append({'question_id':r[0],'question':r[1],'category':r[2],'attempts':int(r[4] or 0),'wrong':int(r[5] or 0),'correct_choice':ci,'correct_answer':correct_answer})
+    return jsonify({'ok':True,'items':items})
 
 @app.get('/api/health')
 def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.3'})
