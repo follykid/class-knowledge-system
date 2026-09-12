@@ -282,6 +282,33 @@ def post_message():
     db.session.add(m); db.session.commit()
     return jsonify({'ok':True,'item':{'id':m.id,'user':m.user_name,'text':m.text,'timestamp':int(m.created_at.timestamp()*1000)}})
 
+@app.get('/api/admin/messages')
+def admin_messages():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    rows=Message.query.order_by(Message.created_at.desc(),Message.id.desc()).limit(500).all()
+    return jsonify({'ok':True,'items':[
+        {'id':m.id,'student_id':m.student_id,'user':m.user_name,'text':m.text,'timestamp':int(m.created_at.timestamp()*1000) if m.created_at else 0}
+        for m in rows
+    ]})
+
+@app.delete('/api/admin/messages/<int:message_id>')
+def admin_delete_message(message_id):
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    m=db.session.get(Message,message_id)
+    if not m: return jsonify({'ok':False,'error':'留言不存在'}),404
+    db.session.delete(m); db.session.commit()
+    return jsonify({'ok':True})
+
+@app.post('/api/admin/messages/clear')
+def admin_clear_messages():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    count=Message.query.delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({'ok':True,'deleted':count})
+
 @app.get('/api/display/leaderboard')
 def display_leaderboard():
     # 大螢幕專用資料：排名、座號、積分與尚未兌換的寶物卡。
