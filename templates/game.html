@@ -1,6 +1,19 @@
 <!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>👑 知識王對戰</title><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap game-wrap"><div class="top"><div class="brand">👑 知識王對戰</div><div><span id="who" class="pill"></span> <span id="score" class="pill">⭐ 本場 0 分</span> <span id="hp" class="pill">❤️ HP 100</span></div></div><div class="battlebar"><div>👤 你：<b id="myBattleScore">0</b> 分</div><div>🤖 AI：<b id="aiBattleScore">0</b> 分　<span class="muted">難度 65%</span></div></div><div class="card game-card"><div id="game">載入中…</div></div></div><script>
-let me=null,game=null,roomCode=new URLSearchParams(location.search).get('room'),timer=null,lastReal=-1,questionStarted=0,countdown=null,realFeedback=null;
-async function api(u,o){let r=await fetch(u,o);let d=await r.json();if(r.status===401){location.href='/';throw Error('login')}if(!r.ok)throw Error(d.error||'錯誤');return d}
+let me=null,game=null,roomCode=new URLSearchParams(location.search).get('room'),timer=null,lastReal=-1,questionStarted=0,countdown=null;
+async function api(u,o){
+  try{
+    const r=await fetch(u,o);
+    const text=await r.text();
+    let d={};
+    if(text){try{d=JSON.parse(text)}catch(_){throw Error('伺服器回應格式錯誤（不是 JSON），請重新整理後再試。')}}
+    if(r.status===401){location.href='/';throw Error('登入已失效，請重新登入。')}
+    if(!r.ok)throw Error(d.error||('伺服器錯誤（HTTP '+r.status+'）'));
+    return d;
+  }catch(e){
+    if(e instanceof TypeError && /pattern/i.test(e.message)) throw Error('瀏覽器無法建立這個房間請求，請重新整理遊戲頁後再試。');
+    throw e;
+  }
+}
 function renderTop(){who.textContent=me.name;score.textContent='⭐ 本場 '+(game?.battleScore||0)+' 分';hp.textContent='❤️ HP '+me.hp;myBattleScore.textContent=game?.battleScore||0;aiBattleScore.textContent=game?.aiScore||0}
 async function init(){let d=await api('/api/me');me=d.user;renderTop();if(roomCode)openRoom();else startAI()}
 async function startAI(){await api('/api/quiz/start',{method:'POST'});let d=await api('/api/questions?count=10');game={questions:d.questions,index:0,correct:0,battleScore:0,aiScore:0,answered:false};me.hp=100;renderTop();showAI()}
@@ -12,49 +25,18 @@ async function answerAI(choice){if(game.answered)return;game.answered=true;clear
 let aiCorrect=Math.random()<0.65;if(aiCorrect)game.aiScore+=speedPoints(1+Math.random()*11);renderTop();document.getElementById('game').insertAdjacentHTML('beforeend',`<div class="notice ${v.correct?'ok':'err'} center">${v.correct?'✅ 答對！本題 +'+v.gained+' 分':'❌ 答錯！本題 +0 分，HP -10'}<br><span class="muted">🤖 AI 本題 ${aiCorrect?'答對':'答錯'}${aiCorrect?'，目前 AI '+game.aiScore+' 分':''}</span></div>`);if(me.hp<=0){setTimeout(()=>needRefill(),700);return}setTimeout(()=>{game.index++;game.answered=false;if(game.index>=game.questions.length)finishAI();else showAI()},650)}
 async function needRefill(){let d=confirm('❤️ HP 已經用完了！\n\n是否使用 1 分兌換 10 HP 繼續練習？');if(d){try{let r=await api('/api/hp/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:1})});me.score=r.score;me.hp=r.hp;renderTop();game.answered=false;game.index++;if(game.index>=game.questions.length)finishAI();else showAI()}catch(e){alert(e.message);finishAI()}}else finishAI()}
 async function finishAI(){let win=game.battleScore>game.aiScore;let d=await api('/api/quiz/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:'ai:'+crypto.randomUUID(),mode:'ai',battle_score:game.battleScore,win})});me.score=d.score;me.hp=d.hp;renderTop();document.getElementById('game').innerHTML=`<div class="hero">${win?'🏆 你贏了！':'🤖 AI 獲勝'}</div><div class="resultbox"><p>👤 你的總得分：<b>${game.battleScore} 分</b></p><p>🤖 AI 總得分：<b>${game.aiScore} 分</b></p><p>答對：<b>${game.correct}/${game.questions.length}</b> 題</p><p>${win?'🏆 獲勝獎勵：':'🤖 落敗保留：'}<b>❤️ +${d.earned_hp} HP</b></p><p>目前 HP：<b>❤️ ${d.hp}</b></p><p>班級積分：<b>⭐ ${d.score} 分</b></p></div><p class="muted center">計分：答對基本 10 分，越快回答加分；獲勝得總得分 100% HP，輸給 AI 得 50% HP。</p><p class="muted center">HP 規則：1000 HP = 1 分；需要繼續練習時，1 分可兌換 10 HP。</p><div class="grid grid2"><button class="btn" onclick="startAI()">🔄 再玩一次</button><button class="btn secondary" onclick="window.close()">關閉遊戲</button></div>`}
-async function leaveRoom(){try{await api('/api/rooms/'+roomCode+'/leave',{method:'POST',keepalive:true})}catch(e){try{navigator.sendBeacon('/api/rooms/'+roomCode+'/leave',new Blob([], {type:'application/json'}))}catch(_){} } clearInterval(timer);window.close();setTimeout(()=>{location.href='/student'},150)}
+async function leaveRoom(){try{await api('/api/rooms/'+encodeURIComponent(roomCode)+'/leave',{method:'POST',keepalive:true})}catch(e){try{navigator.sendBeacon('/api/rooms/'+roomCode+'/leave',new Blob([], {type:'application/json'}))}catch(_){} } clearInterval(timer);window.close();setTimeout(()=>{location.href='/student'},150)}
 function openRoom(){clearInterval(timer);timer=setInterval(pollRoom,1000);pollRoom()}
-window.addEventListener('pagehide',()=>{if(roomCode&&document.visibilityState==='hidden'){fetch('/api/rooms/'+roomCode+'/leave',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'}}).catch(()=>{})}})
-async function pollRoom(){
-  let d=await api('/api/rooms/'+roomCode); let r=d.room;
-  if(r.status==='waiting'){
-    document.getElementById('game').innerHTML=`<div class="hero">🎮 真人對戰</div><p class="center">房間代碼：<b>${r.code}</b></p><p class="center">${r.players.length}/2 人：${r.players.map(p=>p.name).join('、')}</p><p class="muted center">${r.players.length>=2?'兩位玩家已到齊，正在開始對戰…':'等待另一位玩家加入…'}</p><div class="center"><button class="btn secondary" onclick="leaveRoom()">離開房間</button></div>`;
-    return;
-  }
-  if(r.status==='finished'){
-    clearInterval(timer); realFeedback=null;
-    document.getElementById('game').innerHTML=`<div class="hero">🏆 對戰完成！</div><p class="center">${r.players.map(p=>p.name+'：'+p.battle_score+' 分').join('　')}</p><p class="ok center">本場獲得的 HP 已保留；HP 不會自動換成積分，請回學生頁手動兌換。</p><div class="grid grid2"><button class="btn secondary" onclick="leaveRoom()">離開房間</button><button class="btn secondary" onclick="window.close()">關閉遊戲</button></div>`;
-    return;
-  }
-  if(r.status==='playing'){
-    let mine=r.players.find(p=>p.student_id===me.id);
-    if(mine){me.hp=mine.hp||me.hp;game=game||{battleScore:0,aiScore:0};game.battleScore=mine.battle_score||0;renderTop();}
-    // 如果本題已經答過，先顯示對錯與正確答案，等待另一位玩家。
-    if(mine && mine.answered_index===r.current_index){
-      if(!realFeedback || realFeedback.index!==r.current_index){
-        // 若重新整理頁面後沒有本地回饋，就顯示已作答／等待對手；答案內容會在本次作答時立即顯示。
-        realFeedback={index:r.current_index,isCorrect:null,correctText:'等待本題結果',gained:0};
-      }
-      document.getElementById('game').innerHTML=`<div class="muted center">第 ${r.current_index+1} / ${r.question_count} 題</div><div class="hero">⏳ 等待對手作答</div><div class="notice ${realFeedback.isCorrect===null?'':(realFeedback.isCorrect?'ok':'err')} center">${realFeedback.isCorrect===null?'📝 你已作答！':(realFeedback.isCorrect?'✅ 答對！':'❌ 答錯！')}<br>正確答案：<b>${realFeedback.correctText}</b><br><span class="muted">你的本題得分：+${realFeedback.gained||0} 分</span></div><p class="muted center">另一位玩家答完後，系統會自動進入下一題。</p><div class="center"><button class="btn secondary" onclick="leaveRoom()">離開房間</button></div>`;
-      return;
-    }
-    if(lastReal!==r.current_index){
-      lastReal=r.current_index; realFeedback=null;
-      let q=await api('/api/rooms/'+roomCode+'/question');
-      if(q.done)return;
-      document.getElementById('game').innerHTML=`<div class="muted center">第 ${r.current_index+1} / ${r.question_count} 題</div><div class="scoreline"><span>👤 你的得分：<b>${mine?mine.battle_score:0}</b></span><span>⏱️ 即時搶答</span></div><div class="hero">❤️ HP ${me.hp}</div><div class="question game-question">${q.question.question}</div><div class="answers">${q.question.options.map((o,i)=>`<button class="answer" onclick="answerReal(${r.current_index},${i+1})">${i+1}. ${o}</button>`).join('')}</div><p class="muted center">答對基本 10 分，越快回答越高；答錯 HP -10</p><div class="center"><button class="btn secondary" onclick="leaveRoom()">離開房間</button></div>`;
-    }
-  }
-}
+window.addEventListener('pagehide',()=>{if(roomCode&&document.visibilityState==='hidden'){fetch('/api/rooms/'+encodeURIComponent(roomCode)+'/leave',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'}}).catch(()=>{})}})
+async function pollRoom(){if(!roomCode||!/^[A-Z0-9]{5}$/.test(roomCode)){document.getElementById('game').innerHTML='<div class="notice err center">房間代碼無效，請回學生頁重新進入房間。</div>';return}let d=await api('/api/rooms/'+encodeURIComponent(roomCode));let r=d.room;if(r.status==='waiting'){document.getElementById('game').innerHTML=`<div class="hero">🎮 真人對戰</div><p class="center">房間代碼：<b>${r.code}</b></p><p class="center">${r.players.length}/2 人：${r.players.map(p=>p.name).join('、')}</p><p class="muted center">${r.players.length>=2?'兩位玩家已到齊，正在開始對戰…':'等待另一位玩家加入…'}</p><div class="center"><button class="btn secondary" onclick="leaveRoom()">離開房間</button></div>`;return}if(r.status==='finished'){clearInterval(timer);document.getElementById('game').innerHTML=`<div class="hero">🏆 對戰完成！</div><p class="center">${r.players.map(p=>p.name+'：'+p.battle_score+' 分').join('　')}</p><p class="ok center">本場獲得的 HP 已保留；HP 不會自動換成積分，請回學生頁手動兌換。</p><div class="grid grid2"><button class="btn secondary" onclick="leaveRoom()">離開房間</button><button class="btn secondary" onclick="window.close()">關閉遊戲</button></div>`;return}if(r.status==='playing'){let mine=r.players.find(p=>p.student_id===me.id);if(mine){me.hp=mine.hp||me.hp;game=game||{battleScore:0,aiScore:0};game.battleScore=mine.battle_score||0;renderTop()}if(lastReal!==r.current_index){lastReal=r.current_index;let q=await api('/api/rooms/'+roomCode+'/question');if(q.done)return;document.getElementById('game').innerHTML=`<div class="muted center">第 ${r.current_index+1} / ${r.question_count} 題</div><div class="scoreline"><span>👤 你的得分：<b>${mine?mine.battle_score:0}</b></span><span>⏱️ 即時搶答</span></div><div class="hero">❤️ HP ${me.hp}</div><div class="question game-question">${q.question.question}</div><div class="answers">${q.question.options.map((o,i)=>`<button class="answer" onclick="answerReal(${r.current_index},${i+1})">${i+1}. ${o}</button>`).join('')}</div><p class="muted center">答對基本 10 分，越快回答越高；答錯 HP -10</p><div class="center"><button class="btn secondary" onclick="leaveRoom()">離開房間</button></div>`}}}
 async function startRoom(){await api('/api/rooms/'+roomCode+'/start',{method:'POST'});pollRoom()}
 async function answerReal(idx,choice){
   try{
-    let v=await api('/api/rooms/'+roomCode+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:idx,choice})});
-    me.hp=v.hp; renderTop();
-    realFeedback={index:idx,isCorrect:v.correct,correctText:v.correct_text,gained:v.correct?(v.battle_score-(game?.battleScore||0)):0};
-    game=game||{battleScore:0,aiScore:0}; game.battleScore=v.battle_score||0;
-    if(v.advanced){ lastReal=-1; realFeedback=null; setTimeout(pollRoom,350); }
-    else { lastReal=idx; pollRoom(); }
-  }catch(e){alert(e.message)}
+    await api('/api/rooms/'+encodeURIComponent(roomCode)+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:idx,choice})});
+    lastReal=-1;
+    await pollRoom();
+  }catch(e){
+    alert(e.message||'答題時發生錯誤，請重新整理後再試。');
+  }
 }
 init();</script></body></html>

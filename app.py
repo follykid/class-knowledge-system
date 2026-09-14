@@ -502,18 +502,17 @@ def room_answer(code):
     if idx!=r.current_index: return jsonify({'ok':False,'error':'題目已切換'}),409
     if p.answered_index==idx: return jsonify({'ok':True,'duplicate':True,'correct_count':p.correct_count})
     qobj=db.session.get(QuestionBank,ids[idx]); q=question_dict(qobj) if qobj and qobj.active else None
+    if not q: return jsonify({'ok':False,'error':'本題資料不存在，請重新建立房間。'}),404
     correct=(choice==q['correct'])
     elapsed=(datetime.now(timezone.utc)- (r.question_started_at or datetime.now(timezone.utc))).total_seconds()
     gained=speed_points(elapsed) if correct else 0
     if not correct: u.hp=max(0,u.hp-10)
     if correct: p.correct_count+=1; p.battle_score+=gained
     p.answered_index=idx; db.session.commit()
-    # 所有玩家答完本題後才進下一題；進下一題時重設計時起點。
+    # advance when all players answered
     players=RoomPlayer.query.filter_by(room_id=r.id).all()
-    all_answered = len(players) >= 2 and all(x.answered_index==idx for x in players)
-    if all_answered:
+    if all(x.answered_index==idx for x in players):
         r.current_index+=1
-        r.question_started_at=datetime.now(timezone.utc)
         if r.current_index>=len(ids):
             r.status='finished'
             # 真人對戰：以本場 battle_score 判定勝負；勝者獲得 100% 本場分數的 HP，
@@ -529,8 +528,7 @@ def room_answer(code):
                 else: s.losses += 1
             db.session.commit()
         else: db.session.commit()
-    correct_text = q['options'][q['correct']-1] if 1 <= q['correct'] <= len(q['options']) else str(q['correct'])
-    return jsonify({'ok':True,'correct':correct,'correct_choice':q['correct'],'correct_text':correct_text,'correct_count':p.correct_count,'battle_score':p.battle_score,'hp':u.hp,'advanced':all_answered,'room':room_state(r)})
+    return jsonify({'ok':True,'correct':correct,'correct_count':p.correct_count,'battle_score':p.battle_score,'hp':u.hp,'room':room_state(r)})
 
 @app.get('/api/prizes')
 @login_required
