@@ -504,7 +504,16 @@ def room_answer(code):
     qobj=db.session.get(QuestionBank,ids[idx]); q=question_dict(qobj) if qobj and qobj.active else None
     if not q: return jsonify({'ok':False,'error':'本題資料不存在，請重新建立房間。'}),404
     correct=(choice==q['correct'])
-    elapsed=(datetime.now(timezone.utc)- (r.question_started_at or datetime.now(timezone.utc))).total_seconds()
+    # SQLAlchemy 的 DateTime 欄位在部分 PostgreSQL/SQLite 設定下會取回「無時區」時間；
+    # 直接拿 aware datetime 相減會在瀏覽器端看到 500/非 JSON 錯誤。這裡統一視為 UTC 計算。
+    started = r.question_started_at
+    if started is None:
+        elapsed = 12.0
+    else:
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        elapsed=(datetime.now(timezone.utc)-started).total_seconds()
+    elapsed=max(0.0, elapsed)
     gained=speed_points(elapsed) if correct else 0
     if not correct: u.hp=max(0,u.hp-10)
     if correct: p.correct_count+=1; p.battle_score+=gained
