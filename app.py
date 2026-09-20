@@ -325,13 +325,28 @@ def display_leaderboard():
             'cards':[{'id':draw.id, 'name':card.name, 'description':card.description} for draw,card in owned]
         })
     return jsonify({'ok':True,'items':items})
+@app.get('/api/question-categories')
+@login_required
+def question_categories():
+    rows=(db.session.query(QuestionBank.category, db.func.count(QuestionBank.id))
+          .filter_by(active=True)
+          .group_by(QuestionBank.category)
+          .order_by(QuestionBank.category).all())
+    return jsonify({'ok':True,'categories':[{'name':str(name),'count':int(count)} for name,count in rows]})
+
 @app.get('/api/questions')
 @login_required
 def questions():
-    n=min(max(int(request.args.get('count',10)),1),20)
-    bank=active_questions()
+    try: n=min(max(int(request.args.get('count',10)),1),20)
+    except Exception: n=10
+    selected=[x.strip() for x in request.args.getlist('category') if x.strip()]
+    query=QuestionBank.query.filter_by(active=True)
+    if selected:
+        query=query.filter(QuestionBank.category.in_(selected))
+    rows=query.all()
+    bank=[question_dict(q) for q in rows]
     chosen=random.sample(bank,min(n,len(bank))) if bank else []
-    return jsonify({'ok':True,'questions':[{k:q[k] for k in ('id','qtype','category','seconds','question','options')} for q in chosen]})
+    return jsonify({'ok':True,'available':len(bank),'selected_categories':selected,'questions':[{k:q[k] for k in ('id','qtype','category','seconds','question','options')} for q in chosen]})
 
 @app.post('/api/hp/exchange')
 @login_required

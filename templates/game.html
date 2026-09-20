@@ -15,8 +15,35 @@ async function api(u,o){
   }
 }
 function renderTop(){who.textContent=me.name;score.textContent='⭐ 本場 '+(game?.battleScore||0)+' 分';hp.textContent='❤️ HP '+me.hp;myBattleScore.textContent=game?.battleScore||0;aiBattleScore.textContent=game?.aiScore||0}
-async function init(){let d=await api('/api/me');me=d.user;renderTop();if(roomCode)openRoom();else startAI()}
-async function startAI(){await api('/api/quiz/start',{method:'POST'});let d=await api('/api/questions?count=10');game={questions:d.questions,index:0,correct:0,battleScore:0,aiScore:0,answered:false};me.hp=d.hp;renderTop();showAI()}
+async function init(){let d=await api('/api/me');me=d.user;renderTop();if(roomCode)openRoom();else showAISetup()}
+async function startAI(selectedCategories=game?.selectedCategories||[]){
+  const start=await api('/api/quiz/start',{method:'POST'});
+  const params=new URLSearchParams();params.set('count','10');
+  selectedCategories.forEach(c=>params.append('category',c));
+  const d=await api('/api/questions?'+params.toString());
+  if(!d.questions.length){alert('你選擇的題庫目前沒有可練習的題目，請重新選擇。');showAISetup();return}
+  game={questions:d.questions,index:0,correct:0,battleScore:0,aiScore:0,answered:false,selectedCategories:[...selectedCategories]};
+  me.hp=start.hp;renderTop();showAI()
+}
+async function showAISetup(){
+  const d=await api('/api/question-categories');
+  const cats=d.categories||[];
+  if(!cats.length){document.getElementById('game').innerHTML='<div class="notice err center">目前沒有可用的題庫。</div>';return}
+  const saved=game?.selectedCategories?.length?new Set(game.selectedCategories):new Set(cats.map(x=>x.name));
+  document.getElementById('game').innerHTML=`<div class="hero">🤖 AI 對戰</div>
+    <p class="center">請選擇要加入本次練習的題庫，可複選。</p>
+    <div class="category-actions"><button class="btn secondary" onclick="toggleAllCategories(true)">☑ 全選</button><button class="btn secondary" onclick="toggleAllCategories(false)">☐ 全不選</button></div>
+    <div id="categoryList" class="category-list">${cats.map((c,i)=>`<label class="category-item"><input type="checkbox" class="category-check" value="${escapeHtml(c.name)}" ${saved.has(c.name)?'checked':''}><span>${escapeHtml(c.name)}</span><span class="category-count">${c.count} 題</span></label>`).join('')}</div>
+    <div id="categoryHint" class="notice center">已選 ${saved.size} 個題庫</div>
+    <button class="btn big-btn" onclick="beginSelectedAI()">🎮 開始練習</button>
+    <p class="muted center">本次最多抽 10 題；會從你勾選的題庫中隨機出題。</p>`;
+  updateCategoryHint();
+}
+function escapeHtml(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}
+function toggleAllCategories(flag){document.querySelectorAll('.category-check').forEach(x=>x.checked=flag);updateCategoryHint()}
+function updateCategoryHint(){const checks=[...document.querySelectorAll('.category-check')];const selected=checks.filter(x=>x.checked);const hint=document.getElementById('categoryHint');if(hint)hint.textContent=`已選 ${selected.length} 個題庫，共 ${selected.reduce((sum,x)=>sum+parseInt(x.closest('.category-item')?.querySelector('.category-count')?.textContent||'0',10)||0,0)} 題可供抽題`; }
+async function beginSelectedAI(){const selected=[...document.querySelectorAll('.category-check:checked')].map(x=>x.value);if(!selected.length){alert('請至少勾選一個題庫。');return}await startAI(selected)}
+document.addEventListener('change',e=>{if(e.target.classList?.contains('category-check'))updateCategoryHint()});
 function speedPoints(elapsed){let t=Math.max(0,Math.min(12,Number(elapsed)||12));return 10+Math.max(0,Math.min(10,Math.round((12-t)*10/12)))}
 function startClock(){questionStarted=performance.now();clearInterval(countdown);let end=questionStarted+12000;countdown=setInterval(()=>{let left=Math.max(0,(end-performance.now())/1000);let el=document.getElementById('timer');if(el)el.textContent=left.toFixed(1)+' 秒';if(left<=0){clearInterval(countdown)}},100)}
 function showAI(){let q=game.questions[game.index];document.getElementById('game').innerHTML=`<div class="muted center">第 ${game.index+1} / ${game.questions.length} 題</div><div class="scoreline"><span>👤 你的本題得分：<b>等待回答</b></span><span>⏱️ <b id="timer">12.0 秒</b></span></div><div class="hero">❤️ HP ${me.hp}</div><div class="question game-question">${q.question}</div><div class="answers">${q.options.map((o,i)=>`<button class="answer" onclick="answerAI(${i+1})">${i+1}. ${o}</button>`).join('')}</div><p class="muted center">答對基本 10 分；越快回答，速度加分越高。答錯：HP -10</p>`;startClock()}
@@ -24,7 +51,7 @@ async function answerAI(choice){if(game.answered)return;game.answered=true;clear
 // AI 每題有 65% 機率答對；答對速度隨機產生，形成可理解的競賽分數。
 let aiCorrect=Math.random()<0.65;if(aiCorrect)game.aiScore+=speedPoints(1+Math.random()*11);renderTop();document.getElementById('game').insertAdjacentHTML('beforeend',`<div class="notice ${v.correct?'ok':'err'} center">${v.correct?'✅ 答對！本題 +'+v.gained+' 分':'❌ 答錯！本題 +0 分，HP -10'}<br><span class="muted">🤖 AI 本題 ${aiCorrect?'答對':'答錯'}${aiCorrect?'，目前 AI '+game.aiScore+' 分':''}</span></div>`);if(me.hp<=0){setTimeout(()=>needRefill(),700);return}setTimeout(()=>{game.index++;game.answered=false;if(game.index>=game.questions.length)finishAI();else showAI()},650)}
 async function needRefill(){let d=confirm('❤️ HP 已經用完了！\n\n是否使用 1 分兌換 10 HP 繼續練習？');if(d){try{let r=await api('/api/hp/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:1})});me.score=r.score;me.hp=r.hp;renderTop();game.answered=false;game.index++;if(game.index>=game.questions.length)finishAI();else showAI()}catch(e){alert(e.message);finishAI()}}else finishAI()}
-async function finishAI(){let win=game.battleScore>game.aiScore;let d=await api('/api/quiz/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:'ai:'+crypto.randomUUID(),mode:'ai',battle_score:game.battleScore,win})});me.score=d.score;me.hp=d.hp;renderTop();document.getElementById('game').innerHTML=`<div class="hero">${win?'🏆 你贏了！':'🤖 AI 獲勝'}</div><div class="resultbox"><p>👤 你的總得分：<b>${game.battleScore} 分</b></p><p>🤖 AI 總得分：<b>${game.aiScore} 分</b></p><p>答對：<b>${game.correct}/${game.questions.length}</b> 題</p><p>${win?'🏆 獲勝獎勵：':'🤖 落敗保留：'}<b>❤️ +${d.earned_hp} HP</b></p><p>目前 HP：<b>❤️ ${d.hp}</b></p><p>班級積分：<b>⭐ ${d.score} 分</b></p></div><p class="muted center">計分：答對基本 10 分，越快回答加分；獲勝得總得分 100% HP，輸給 AI 得 50% HP。</p><p class="muted center">HP 規則：1000 HP = 1 分；需要繼續練習時，1 分可兌換 10 HP。</p><div class="grid grid2"><button class="btn" onclick="startAI()">🔄 再玩一次</button><button class="btn secondary" onclick="window.close()">關閉遊戲</button></div>`}
+async function finishAI(){let win=game.battleScore>game.aiScore;let d=await api('/api/quiz/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:'ai:'+crypto.randomUUID(),mode:'ai',battle_score:game.battleScore,win})});me.score=d.score;me.hp=d.hp;renderTop();document.getElementById('game').innerHTML=`<div class="hero">${win?'🏆 你贏了！':'🤖 AI 獲勝'}</div><div class="resultbox"><p>👤 你的總得分：<b>${game.battleScore} 分</b></p><p>🤖 AI 總得分：<b>${game.aiScore} 分</b></p><p>答對：<b>${game.correct}/${game.questions.length}</b> 題</p><p>${win?'🏆 獲勝獎勵：':'🤖 落敗保留：'}<b>❤️ +${d.earned_hp} HP</b></p><p>目前 HP：<b>❤️ ${d.hp}</b></p><p>班級積分：<b>⭐ ${d.score} 分</b></p></div><p class="muted center">計分：答對基本 10 分，越快回答加分；獲勝得總得分 100% HP，輸給 AI 得 50% HP。</p><p class="muted center">HP 規則：1000 HP = 1 分；需要繼續練習時，1 分可兌換 10 HP。</p><div class="grid grid2"><button class="btn" onclick="showAISetup()">🔄 再選題庫</button><button class="btn secondary" onclick="window.close()">關閉遊戲</button></div>`}
 async function leaveRoom(){try{await api('/api/rooms/'+encodeURIComponent(roomCode)+'/leave',{method:'POST',keepalive:true})}catch(e){try{navigator.sendBeacon('/api/rooms/'+roomCode+'/leave',new Blob([], {type:'application/json'}))}catch(_){} } clearInterval(timer);window.close();setTimeout(()=>{location.href='/student'},150)}
 function openRoom(){clearInterval(timer);timer=setInterval(pollRoom,1000);pollRoom()}
 window.addEventListener('pagehide',()=>{if(roomCode&&document.visibilityState==='hidden'){fetch('/api/rooms/'+encodeURIComponent(roomCode)+'/leave',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'}}).catch(()=>{})}})
