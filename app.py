@@ -360,7 +360,7 @@ def hp_to_score():
 @login_required
 def quiz_start():
     u=current_user()
-    u.hp=100
+    # 對戰開始不重設 HP，保留學生原有 HP；本場只重設本場得分。
     u.battle_score=0
     db.session.commit()
     return jsonify({'ok':True,'hp':u.hp,'battle_score':u.battle_score})
@@ -440,7 +440,8 @@ def join_room(code):
         r.started_at=datetime.now(timezone.utc); r.question_started_at=datetime.now(timezone.utc)
         for p in players:
             st=db.session.get(Student,p.student_id)
-            st.hp=100; p.answered_index=-1; p.correct_count=0; p.battle_score=0
+            # 真人對戰開始不重設 HP，保留學生原有 HP。
+        p.answered_index=-1; p.correct_count=0; p.battle_score=0
     db.session.commit()
     return jsonify({'ok':True,'room':room_state(r)})
 @app.post('/api/rooms/<code>/leave')
