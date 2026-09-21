@@ -56,6 +56,30 @@ class QuestionBank(db.Model):
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
     updated_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),onupdate=lambda:datetime.now(timezone.utc))
 
+class QuestionLibrary(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(100),unique=True,nullable=False)
+    subject=db.Column(db.String(50),default='')
+    grade=db.Column(db.String(30),default='')
+    description=db.Column(db.String(200),default='')
+    active=db.Column(db.Boolean,default=True)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+
+class QuestionUnit(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    library_id=db.Column(db.Integer,db.ForeignKey('question_library.id'),nullable=False)
+    name=db.Column(db.String(100),nullable=False)
+    sort_order=db.Column(db.Integer,default=0)
+    active=db.Column(db.Boolean,default=True)
+    __table_args__=(db.UniqueConstraint('library_id','name',name='uq_library_unit'),)
+
+class QuestionLibraryLink(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    question_id=db.Column(db.Integer,db.ForeignKey('question_bank.id'),nullable=False)
+    library_id=db.Column(db.Integer,db.ForeignKey('question_library.id'),nullable=False)
+    unit_id=db.Column(db.Integer,db.ForeignKey('question_unit.id'),nullable=True)
+    __table_args__=(db.UniqueConstraint('question_id','library_id',name='uq_question_library'),)
+
 class AnswerRecord(db.Model):
     id=db.Column(db.Integer,primary_key=True)
     student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
@@ -132,6 +156,7 @@ def question_dict(q):
         'options': json.loads(q.options_json or '[]'),
         'correct': q.correct,
         'active': bool(q.active),
+        'libraries': question_libraries_for_question(q.id),
     }
 
 def active_questions():
@@ -167,6 +192,38 @@ def normalize_question_input(data):
     elif not (1 <= correct <= len(options) <= 4):
         raise ValueError('正確答案編號或選項數量不正確')
     return qtype,category,seconds,question,options,correct
+
+def get_or_create_library(name, subject='', grade='', description=''):
+    name=(str(name or '').strip() or '未分類題庫')[:100]
+    lib=QuestionLibrary.query.filter_by(name=name).first()
+    if not lib:
+        lib=QuestionLibrary(name=name,subject=str(subject or '')[:50],grade=str(grade or '')[:30],description=str(description or '')[:200],active=True)
+        db.session.add(lib); db.session.flush()
+    return lib
+
+def get_or_create_unit(library, name):
+    name=(str(name or '').strip() or '未分類')[:100]
+    unit=QuestionUnit.query.filter_by(library_id=library.id,name=name).first()
+    if not unit:
+        unit=QuestionUnit(library_id=library.id,name=name,sort_order=QuestionUnit.query.filter_by(library_id=library.id).count())
+        db.session.add(unit); db.session.flush()
+    return unit
+
+def link_question(question, library, unit=None):
+    link=QuestionLibraryLink.query.filter_by(question_id=question.id,library_id=library.id).first()
+    if not link:
+        link=QuestionLibraryLink(question_id=question.id,library_id=library.id,unit_id=unit.id if unit else None)
+        db.session.add(link)
+    elif unit and link.unit_id != unit.id:
+        link.unit_id=unit.id
+    return link
+
+def question_libraries_for_question(question_id):
+    rows=(db.session.query(QuestionLibrary,QuestionUnit)
+          .join(QuestionLibraryLink,QuestionLibraryLink.library_id==QuestionLibrary.id)
+          .outerjoin(QuestionUnit,QuestionUnit.id==QuestionLibraryLink.unit_id)
+          .filter(QuestionLibraryLink.question_id==question_id,QuestionLibrary.active==True).all())
+    return [{'id':lib.id,'name':lib.name,'unit_id':unit.id if unit else None,'unit':unit.name if unit else ''} for lib,unit in rows]
 
 def seed():
     db.create_all()
@@ -204,6 +261,13 @@ def seed():
                 category=str(q.get('category','未分類')), seconds=60,
                 question=str(q.get('question','')), options_json=json.dumps(q.get('options',[]),ensure_ascii=False),
                 correct=int(q.get('correct',1)), active=True))
+    db.session.commit()
+    # 建立新版「題庫→單元→題目」架構；舊題目依原分類自動歸入對應題庫。
+    for q in QuestionBank.query.filter_by(active=True).all():
+        if not QuestionLibraryLink.query.filter_by(question_id=q.id).first():
+            lib=get_or_create_library(q.category)
+            unit=get_or_create_unit(lib,q.category)
+            link_question(q,lib,unit)
     db.session.commit()
 
 def current_user():
@@ -325,28 +389,61 @@ def display_leaderboard():
             'cards':[{'id':draw.id, 'name':card.name, 'description':card.description} for draw,card in owned]
         })
     return jsonify({'ok':True,'items':items})
+@app.get('/api/question-libraries')
+@login_required
+def question_libraries():
+    libs=QuestionLibrary.query.filter_by(active=True).order_by(QuestionLibrary.name).all()
+    out=[]
+    for lib in libs:
+        units=[]
+        for unit in QuestionUnit.query.filter_by(library_id=lib.id,active=True).order_by(QuestionUnit.sort_order,QuestionUnit.id).all():
+            count=(db.session.query(db.func.count(QuestionLibraryLink.id)).filter(QuestionLibraryLink.library_id==lib.id,QuestionLibraryLink.unit_id==unit.id).scalar() or 0)
+            units.append({'id':unit.id,'name':unit.name,'count':int(count)})
+        count=(db.session.query(db.func.count(QuestionLibraryLink.id)).filter(QuestionLibraryLink.library_id==lib.id).scalar() or 0)
+        out.append({'id':lib.id,'name':lib.name,'subject':lib.subject,'grade':lib.grade,'description':lib.description,'count':int(count),'units':units})
+    return jsonify({'ok':True,'libraries':out})
+
 @app.get('/api/question-categories')
 @login_required
 def question_categories():
-    rows=(db.session.query(QuestionBank.category, db.func.count(QuestionBank.id))
-          .filter_by(active=True)
-          .group_by(QuestionBank.category)
-          .order_by(QuestionBank.category).all())
-    return jsonify({'ok':True,'categories':[{'name':str(name),'count':int(count)} for name,count in rows]})
+    # 舊版相容：把題庫名稱當成分類名稱回傳。
+    libs=QuestionLibrary.query.filter_by(active=True).order_by(QuestionLibrary.name).all()
+    return jsonify({'ok':True,'categories':[{'name':lib.name,'count':int(db.session.query(db.func.count(QuestionLibraryLink.id)).filter(QuestionLibraryLink.library_id==lib.id).scalar() or 0)} for lib in libs]})
 
 @app.get('/api/questions')
 @login_required
 def questions():
     try: n=min(max(int(request.args.get('count',10)),1),20)
     except Exception: n=10
-    selected=[x.strip() for x in request.args.getlist('category') if x.strip()]
-    query=QuestionBank.query.filter_by(active=True)
-    if selected:
-        query=query.filter(QuestionBank.category.in_(selected))
-    rows=query.all()
-    bank=[question_dict(q) for q in rows]
+    lib_ids=[]
+    for x in request.args.getlist('library_id'):
+        try: lib_ids.append(int(x))
+        except: pass
+    unit_ids=[]
+    for x in request.args.getlist('unit_id'):
+        try: unit_ids.append(int(x))
+        except: pass
+    # 舊版前端仍可用 category=題庫名稱。
+    names=[x.strip() for x in request.args.getlist('category') if x.strip()]
+    if names:
+        lib_ids += [x.id for x in QuestionLibrary.query.filter(QuestionLibrary.name.in_(names),QuestionLibrary.active==True).all()]
+    qquery=QuestionBank.query.filter_by(active=True)
+    if lib_ids or unit_ids:
+        linkq=db.session.query(QuestionLibraryLink.question_id)
+        cond=[]
+        if lib_ids: cond.append(QuestionLibraryLink.library_id.in_(list(set(lib_ids))))
+        if unit_ids: cond.append(QuestionLibraryLink.unit_id.in_(list(set(unit_ids))))
+        from sqlalchemy import or_
+        # 若指定了單元，以單元為最精確的練習範圍；沒有指定單元才使用整個題庫。
+        if unit_ids:
+            linkq=linkq.filter(QuestionLibraryLink.unit_id.in_(list(set(unit_ids))))
+        elif lib_ids:
+            linkq=linkq.filter(QuestionLibraryLink.library_id.in_(list(set(lib_ids))))
+        ids=[r[0] for r in linkq.distinct().all()]
+        qquery=qquery.filter(QuestionBank.id.in_(ids)) if ids else qquery.filter(QuestionBank.id==-1)
+    rows=qquery.all(); bank=[question_dict(q) for q in rows]
     chosen=random.sample(bank,min(n,len(bank))) if bank else []
-    return jsonify({'ok':True,'available':len(bank),'selected_categories':selected,'questions':[{k:q[k] for k in ('id','qtype','category','seconds','question','options')} for q in chosen]})
+    return jsonify({'ok':True,'available':len(bank),'selected_libraries':list(set(lib_ids)),'selected_units':list(set(unit_ids)),'questions':[{k:q[k] for k in ('id','qtype','category','seconds','question','options')} for q in chosen]})
 
 @app.post('/api/hp/exchange')
 @login_required
@@ -495,7 +592,7 @@ def start_room(code):
     if RoomPlayer.query.filter_by(room_id=r.id).count()<2: return jsonify({'ok':False,'error':'至少需要兩位玩家'}),400
     r.status='playing'; r.current_index=0; r.started_at=datetime.now(timezone.utc); r.question_started_at=datetime.now(timezone.utc)
     for p in RoomPlayer.query.filter_by(room_id=r.id).all():
-        s=db.session.get(Student,p.student_id); s.hp=100; p.answered_index=-1; p.correct_count=0; p.battle_score=0
+        p.answered_index=-1; p.correct_count=0; p.battle_score=0
     db.session.commit()
     return jsonify({'ok':True,'room':room_state(r)})
 @app.get('/api/rooms/<code>/question')
@@ -606,28 +703,74 @@ def admin_students():
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
     return jsonify({'ok':True,'items':[{'id':s.id,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'wins':s.wins,'losses':s.losses} for s in Student.query.filter_by(role='student').order_by(Student.seat).all()]})
 
+@app.get('/api/admin/question-libraries')
+def admin_question_libraries():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    libs=QuestionLibrary.query.filter_by(active=True).order_by(QuestionLibrary.name).all()
+    items=[]
+    for lib in libs:
+        units=[]
+        for unit in QuestionUnit.query.filter_by(library_id=lib.id,active=True).order_by(QuestionUnit.sort_order,QuestionUnit.id).all():
+            count=db.session.query(db.func.count(QuestionLibraryLink.id)).filter(QuestionLibraryLink.library_id==lib.id,QuestionLibraryLink.unit_id==unit.id).scalar() or 0
+            units.append({'id':unit.id,'name':unit.name,'count':int(count)})
+        count=db.session.query(db.func.count(QuestionLibraryLink.id)).filter(QuestionLibraryLink.library_id==lib.id).scalar() or 0
+        items.append({'id':lib.id,'name':lib.name,'subject':lib.subject,'grade':lib.grade,'description':lib.description,'count':int(count),'units':units})
+    return jsonify({'ok':True,'items':items})
+
+@app.post('/api/admin/question-libraries')
+def admin_add_library():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    data=request.get_json() or {}; name=str(data.get('name','')).strip()
+    if not name: return jsonify({'ok':False,'error':'題庫名稱不能空白'}),400
+    if QuestionLibrary.query.filter_by(name=name).first(): return jsonify({'ok':False,'error':'題庫名稱已存在'}),400
+    lib=QuestionLibrary(name=name,subject=str(data.get('subject','')).strip(),grade=str(data.get('grade','')).strip(),description=str(data.get('description','')).strip())
+    db.session.add(lib); db.session.commit(); return jsonify({'ok':True,'library':{'id':lib.id,'name':lib.name}})
+
+@app.post('/api/admin/question-units')
+def admin_add_unit():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    data=request.get_json() or {}
+    lib=db.session.get(QuestionLibrary,int(data.get('library_id',0)))
+    if not lib or not lib.active: return jsonify({'ok':False,'error':'題庫不存在'}),404
+    name=str(data.get('name','')).strip()
+    if not name: return jsonify({'ok':False,'error':'單元名稱不能空白'}),400
+    if QuestionUnit.query.filter_by(library_id=lib.id,name=name).first(): return jsonify({'ok':False,'error':'單元名稱已存在'}),400
+    unit=QuestionUnit(library_id=lib.id,name=name,sort_order=QuestionUnit.query.filter_by(library_id=lib.id).count())
+    db.session.add(unit); db.session.commit(); return jsonify({'ok':True,'unit':{'id':unit.id,'name':unit.name}})
+
 @app.get('/api/admin/questions')
 def admin_questions():
     u=current_user()
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
-    category=str(request.args.get('category','')).strip()
-    keyword=str(request.args.get('q','')).strip()
+    library_id=int(request.args.get('library_id',0) or 0); unit_id=int(request.args.get('unit_id',0) or 0); keyword=str(request.args.get('q','')).strip()
     query=QuestionBank.query.filter_by(active=True)
-    if category: query=query.filter(QuestionBank.category==category)
+    if library_id:
+        ids=[r[0] for r in db.session.query(QuestionLibraryLink.question_id).filter_by(library_id=library_id).distinct().all()]
+        query=query.filter(QuestionBank.id.in_(ids)) if ids else query.filter(QuestionBank.id==-1)
+    if unit_id:
+        ids=[r[0] for r in db.session.query(QuestionLibraryLink.question_id).filter_by(unit_id=unit_id).distinct().all()]
+        query=query.filter(QuestionBank.id.in_(ids)) if ids else query.filter(QuestionBank.id==-1)
     if keyword: query=query.filter(QuestionBank.question.ilike(f'%{keyword}%'))
     rows=query.order_by(QuestionBank.id.desc()).limit(500).all()
-    return jsonify({'ok':True,'count':QuestionBank.query.filter_by(active=True).count(),'items':[question_dict(q) for q in rows], 'categories':[x[0] for x in db.session.query(QuestionBank.category).filter_by(active=True).distinct().order_by(QuestionBank.category).all()]})
+    return jsonify({'ok':True,'count':QuestionBank.query.filter_by(active=True).count(),'items':[question_dict(q) for q in rows]})
 
 @app.post('/api/admin/questions')
 def admin_add_question():
     u=current_user()
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
-    try:
-        qtype,category,seconds,question,options,correct=normalize_question_input(request.get_json() or {})
-    except ValueError as e:
-        return jsonify({'ok':False,'error':str(e)}),400
+    data=request.get_json() or {}
+    try: qtype,category,seconds,question,options,correct=normalize_question_input(data)
+    except ValueError as e: return jsonify({'ok':False,'error':str(e)}),400
+    lib_id=int(data.get('library_id',0) or 0); unit_id=int(data.get('unit_id',0) or 0)
+    lib=db.session.get(QuestionLibrary,lib_id) if lib_id else None
+    if not lib: return jsonify({'ok':False,'error':'請先選擇題庫'}),400
+    unit=db.session.get(QuestionUnit,unit_id) if unit_id else get_or_create_unit(lib,category)
+    if unit.library_id!=lib.id: return jsonify({'ok':False,'error':'單元不屬於所選題庫'}),400
     q=QuestionBank(id=next_question_id(),qtype=qtype,category=category,seconds=seconds,question=question,options_json=json.dumps(options,ensure_ascii=False),correct=correct,active=True)
-    db.session.add(q); db.session.commit()
+    db.session.add(q); db.session.flush(); link_question(q,lib,unit); db.session.commit()
     return jsonify({'ok':True,'question':question_dict(q)})
 
 @app.post('/api/admin/questions/import')
@@ -637,8 +780,7 @@ def admin_import_questions():
     if 'file' not in request.files: return jsonify({'ok':False,'error':'請選擇 CSV 檔案'}),400
     file=request.files['file']
     if not file.filename.lower().endswith('.csv'): return jsonify({'ok':False,'error':'只接受 CSV 檔案'}),400
-    raw=file.read()
-    text=None
+    raw=file.read(); text=None
     for enc in ('utf-8-sig','utf-8','cp950','big5'):
         try: text=raw.decode(enc); break
         except UnicodeDecodeError: continue
@@ -646,31 +788,43 @@ def admin_import_questions():
     reader=csv.DictReader(io.StringIO(text))
     required={'題目','選項一','選項二','正確答案'}
     if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
-        return jsonify({'ok':False,'error':'CSV 欄位需至少包含：題目、選項一、選項二、正確答案；建議使用系統提供的完整格式'}),400
-    imported=[]; skipped=[]; errors=[]
-    existing={(q.category.strip(),q.question.strip()) for q in QuestionBank.query.filter_by(active=True).all()}
-    nid=next_question_id()
+        return jsonify({'ok':False,'error':'CSV 至少需要：題目、選項一、選項二、正確答案；新版建議增加「題庫、單元」欄位。'}),400
+    imported=[]; skipped=[]; errors=[]; existing={(q.category.strip(),q.question.strip()) for q in QuestionBank.query.filter_by(active=True).all()}; nid=next_question_id()
     for lineno,row in enumerate(reader,start=2):
         try:
-            data={
-                '題型':row.get('題型','選擇題'), '分類':row.get('分類','未分類'), '秒數':row.get('秒數','60'),
-                '題目':row.get('題目',''), '選項一':row.get('選項一',''), '選項二':row.get('選項二',''),
-                '選項三':row.get('選項三',''), '選項四':row.get('選項四',''), '正確答案':row.get('正確答案','1')
-            }
+            library_name=str(row.get('題庫') or row.get('分類') or '').strip() or '未分類題庫'
+            unit_name=str(row.get('單元') or row.get('分類') or '未分類').strip() or '未分類'
+            lib=get_or_create_library(library_name,row.get('科目',''),row.get('年級',''),row.get('題庫說明',''))
+            unit=get_or_create_unit(lib,unit_name)
+            data={'題型':row.get('題型','選擇題'),'分類':library_name,'秒數':row.get('秒數','60'),'題目':row.get('題目',''),'選項一':row.get('選項一',''),'選項二':row.get('選項二',''),'選項三':row.get('選項三',''),'選項四':row.get('選項四',''),'正確答案':row.get('正確答案','1')}
             qtype,category,seconds,question,options,correct=normalize_question_input(data)
             key=(category,question)
-            if key in existing:
-                skipped.append({'line':lineno,'reason':'已有相同分類與題目','question':question})
-                continue
-            q=QuestionBank(id=nid,qtype=qtype,category=category,seconds=seconds,question=question,options_json=json.dumps(options,ensure_ascii=False),correct=correct,active=True)
-            db.session.add(q); imported.append(q); existing.add(key); nid+=1
-        except Exception as e:
-            errors.append({'line':lineno,'error':str(e)})
-    if errors and not imported:
-        db.session.rollback()
-        return jsonify({'ok':False,'error':'沒有成功匯入任何題目','imported':0,'skipped':len(skipped),'errors':errors[:20]}),400
-    db.session.commit()
-    return jsonify({'ok':True,'imported':len(imported),'skipped':len(skipped),'errors':errors[:20],'total':QuestionBank.query.filter_by(active=True).count()})
+            # 若相同題目已存在，就加入新的題庫/單元，而不是複製題目。
+            opts_json=json.dumps(options,ensure_ascii=False)
+            q=None
+            for candidate in QuestionBank.query.filter_by(question=question,correct=correct,active=True).all():
+                if candidate.options_json==opts_json:
+                    q=candidate; break
+            if q:
+                link_question(q,lib,unit); skipped.append({'line':lineno,'reason':'相同題目已存在，已加入所選題庫','question':question}); continue
+            q=QuestionBank(id=nid,qtype=qtype,category=category,seconds=seconds,question=question,options_json=opts_json,correct=correct,active=True)
+            db.session.add(q); db.session.flush(); link_question(q,lib,unit); imported.append(q); nid+=1
+        except Exception as e: errors.append({'line':lineno,'error':str(e)})
+    if errors and not imported and not skipped: db.session.rollback(); return jsonify({'ok':False,'error':'沒有成功匯入任何題目','errors':errors[:20]}),400
+    db.session.commit(); return jsonify({'ok':True,'imported':len(imported),'skipped':len(skipped),'errors':errors[:20],'total':QuestionBank.query.filter_by(active=True).count()})
+
+@app.post('/api/admin/questions/<int:q_id>/link')
+def admin_link_question(q_id):
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    q=db.session.get(QuestionBank,q_id)
+    if not q or not q.active: return jsonify({'ok':False,'error':'題目不存在'}),404
+    data=request.get_json() or {}; lib=db.session.get(QuestionLibrary,int(data.get('library_id',0) or 0))
+    if not lib or not lib.active: return jsonify({'ok':False,'error':'題庫不存在'}),404
+    unit=db.session.get(QuestionUnit,int(data.get('unit_id',0) or 0)) if data.get('unit_id') else get_or_create_unit(lib,q.category)
+    if unit.library_id!=lib.id: return jsonify({'ok':False,'error':'單元不屬於所選題庫'}),400
+    link_question(q,lib,unit); db.session.commit()
+    return jsonify({'ok':True,'question':question_dict(q)})
 
 @app.delete('/api/admin/questions/<int:q_id>')
 def admin_delete_question(q_id):
@@ -678,25 +832,22 @@ def admin_delete_question(q_id):
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
     q=db.session.get(QuestionBank,q_id)
     if not q or not q.active: return jsonify({'ok':False,'error':'題目不存在'}),404
-    q.active=False; db.session.commit()
-    return jsonify({'ok':True})
+    q.active=False; db.session.commit(); return jsonify({'ok':True})
 
 @app.get('/api/admin/questions/export')
 def admin_export_questions():
     u=current_user()
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
-    rows=QuestionBank.query.filter_by(active=True).order_by(QuestionBank.id).all()
-    output=io.StringIO(newline='')
-    writer=csv.writer(output)
-    writer.writerow(['題型','分類','秒數','題目','選項一','選項二','選項三','選項四','正確答案'])
+    rows=QuestionBank.query.filter_by(active=True).order_by(QuestionBank.id).all(); output=io.StringIO(newline=''); writer=csv.writer(output)
+    writer.writerow(['題庫','單元','科目','年級','題型','秒數','題目','選項一','選項二','選項三','選項四','正確答案'])
     for q in rows:
-        opts=json.loads(q.options_json or '[]')
-        opts=(opts+['','','',''])[:4]
-        writer.writerow([q.qtype,q.category,q.seconds,q.question,*opts,q.correct])
+        links=question_libraries_for_question(q.id) or [{'name':q.category,'unit':q.category,'id':None}]
+        opts=json.loads(q.options_json or '[]'); opts=(opts+['','','',''])[:4]
+        for link in links:
+            lib=QuestionLibrary.query.filter_by(id=link.get('id')).first() if link.get('id') else None
+            writer.writerow([link.get('name',''),link.get('unit',''),lib.subject if lib else '',lib.grade if lib else '',q.qtype,q.seconds,q.question,*opts,q.correct])
     from flask import Response
-    resp=Response('﻿'+output.getvalue(),mimetype='text/csv; charset=utf-8')
-    resp.headers['Content-Disposition']='attachment; filename=class_knowledge_question_bank.csv'
-    return resp
+    resp=Response('\ufeff'+output.getvalue(),mimetype='text/csv; charset=utf-8'); resp.headers['Content-Disposition']='attachment; filename=class_knowledge_question_bank_v2.csv'; return resp
 
 @app.get('/api/admin/errors')
 def admin_errors():
@@ -714,7 +865,7 @@ def admin_errors():
     return jsonify({'ok':True,'items':items})
 
 @app.get('/api/health')
-def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.3'})
+def health(): return jsonify({'status':'ok','system':'class-knowledge-system-v1.4'})
 
 @app.context_processor
 def ctx(): return {'year':datetime.now().year}

@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>👑 知識王對戰</title><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap game-wrap"><div class="top"><div class="brand">👑 知識王對戰</div><div><span id="who" class="pill"></span> <span id="score" class="pill">⭐ 本場 0 分</span> <span id="hp" class="pill">❤️ HP 100</span></div></div><div class="battlebar"><div>👤 你：<b id="myBattleScore">0</b> 分</div><div>🤖 AI：<b id="aiBattleScore">0</b> 分　<span class="muted">難度 65%</span></div></div><div class="card game-card"><div id="game">載入中…</div></div></div><script>
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>👑 知識王對戰</title><link rel="stylesheet" href="/static/style.css"><style>.ai-library-list{display:grid;gap:10px;max-height:520px;overflow:auto;margin:12px 0}.ai-library-card{border:1px solid #30343b;border-radius:12px;background:#15181d;padding:10px}.ai-library-head{display:flex;align-items:center;gap:9px;cursor:pointer}.ai-library-head input,.ai-unit-item input{width:18px;height:18px}.ai-library-head .category-count{margin-left:auto}.ai-unit-list{display:grid;gap:6px;margin:8px 0 0 28px;border-top:1px solid #30343b;padding-top:8px}.ai-unit-item{display:flex;align-items:center;gap:8px;font-size:.9rem}.ai-unit-item .category-count{margin-left:auto;color:#9da6b2}.ai-no-unit{margin:7px 0 0 28px;font-size:.85rem}.category-actions{display:flex;gap:8px;justify-content:center;margin:8px 0}</style></head><body><div class="wrap game-wrap"><div class="top"><div class="brand">👑 知識王對戰</div><div><span id="who" class="pill"></span> <span id="score" class="pill">⭐ 本場 0 分</span> <span id="hp" class="pill">❤️ HP 100</span></div></div><div class="battlebar"><div>👤 你：<b id="myBattleScore">0</b> 分</div><div>🤖 AI：<b id="aiBattleScore">0</b> 分　<span class="muted">難度 65%</span></div></div><div class="card game-card"><div id="game">載入中…</div></div></div><script>
 let me=null,game=null,roomCode=new URLSearchParams(location.search).get('room'),timer=null,lastReal=-1,questionStarted=0,countdown=null;
 async function api(u,o){
   try{
@@ -16,34 +16,35 @@ async function api(u,o){
 }
 function renderTop(){who.textContent=me.name;score.textContent='⭐ 本場 '+(game?.battleScore||0)+' 分';hp.textContent='❤️ HP '+me.hp;myBattleScore.textContent=game?.battleScore||0;aiBattleScore.textContent=game?.aiScore||0}
 async function init(){let d=await api('/api/me');me=d.user;renderTop();if(roomCode)openRoom();else showAISetup()}
-async function startAI(selectedCategories=game?.selectedCategories||[]){
+async function startAI(selectedLibraries=[],selectedUnits=[]){
   const start=await api('/api/quiz/start',{method:'POST'});
   const params=new URLSearchParams();params.set('count','10');
-  selectedCategories.forEach(c=>params.append('category',c));
+  selectedLibraries.forEach(id=>params.append('library_id',id));
+  selectedUnits.forEach(id=>params.append('unit_id',id));
   const d=await api('/api/questions?'+params.toString());
-  if(!d.questions.length){alert('你選擇的題庫目前沒有可練習的題目，請重新選擇。');showAISetup();return}
-  game={questions:d.questions,index:0,correct:0,battleScore:0,aiScore:0,answered:false,selectedCategories:[...selectedCategories]};
+  if(!d.questions.length){alert('你選擇的題庫／單元目前沒有可練習的題目，請重新選擇。');showAISetup();return}
+  game={questions:d.questions,index:0,correct:0,battleScore:0,aiScore:0,answered:false,selectedLibraries:[...selectedLibraries],selectedUnits:[...selectedUnits]};
   me.hp=start.hp;renderTop();showAI()
 }
 async function showAISetup(){
-  const d=await api('/api/question-categories');
-  const cats=d.categories||[];
-  if(!cats.length){document.getElementById('game').innerHTML='<div class="notice err center">目前沒有可用的題庫。</div>';return}
-  const saved=game?.selectedCategories?.length?new Set(game.selectedCategories):new Set(cats.map(x=>x.name));
+  const d=await api('/api/question-libraries');const libs=d.libraries||[];
+  if(!libs.length){document.getElementById('game').innerHTML='<div class="notice err center">目前沒有可用的題庫。</div>';return}
+  const savedLib=game?.selectedLibraries?.length?new Set(game.selectedLibraries.map(Number)):new Set(libs.map(x=>x.id));
+  const savedUnits=game?.selectedUnits?.length?new Set(game.selectedUnits.map(Number)):new Set();
   document.getElementById('game').innerHTML=`<div class="hero">🤖 AI 對戰</div>
-    <p class="center">請選擇要加入本次練習的題庫，可複選。</p>
-    <div class="category-actions"><button class="btn secondary" onclick="toggleAllCategories(true)">☑ 全選</button><button class="btn secondary" onclick="toggleAllCategories(false)">☐ 全不選</button></div>
-    <div id="categoryList" class="category-list">${cats.map((c,i)=>`<label class="category-item"><input type="checkbox" class="category-check" value="${escapeHtml(c.name)}" ${saved.has(c.name)?'checked':''}><span>${escapeHtml(c.name)}</span><span class="category-count">${c.count} 題</span></label>`).join('')}</div>
-    <div id="categoryHint" class="notice center">已選 ${saved.size} 個題庫</div>
+    <p class="center">請選擇要加入本次練習的題庫，可複選；也可以展開題庫只練習指定單元。</p>
+    <div class="category-actions"><button class="btn secondary" onclick="toggleAllLibraries(true)">☑ 全選題庫</button><button class="btn secondary" onclick="toggleAllLibraries(false)">☐ 全不選</button></div>
+    <div id="librarySelectList" class="ai-library-list">${libs.map(lib=>`<div class="ai-library-card"><label class="ai-library-head"><input type="checkbox" class="library-check" value="${lib.id}" ${savedLib.has(lib.id)?'checked':''}><b>📚 ${escapeHtml(lib.name)}</b><span class="category-count">${lib.count} 題</span></label>${lib.units?.length?`<div class="ai-unit-list">${lib.units.map(u=>`<label class="ai-unit-item"><input type="checkbox" class="unit-check" data-library="${lib.id}" value="${u.id}" ${savedUnits.has(u.id)?'checked':''}><span>${escapeHtml(u.name)}</span><span class="category-count">${u.count} 題</span></label>`).join('')}</div>`:'<div class="muted ai-no-unit">尚未建立單元</div>'}</div>`).join('')}</div>
+    <div id="categoryHint" class="notice center"></div>
     <button class="btn big-btn" onclick="beginSelectedAI()">🎮 開始練習</button>
-    <p class="muted center">本次最多抽 10 題；會從你勾選的題庫中隨機出題。</p>`;
-  updateCategoryHint();
+    <p class="muted center">本次最多抽 10 題；選擇題庫時會從所選題庫全部題目抽題；若選了單元，則只從所選單元抽題。</p>`;
+  updateLibraryHint();
 }
 function escapeHtml(v){const d=document.createElement('div');d.textContent=v??'';return d.innerHTML}
-function toggleAllCategories(flag){document.querySelectorAll('.category-check').forEach(x=>x.checked=flag);updateCategoryHint()}
-function updateCategoryHint(){const checks=[...document.querySelectorAll('.category-check')];const selected=checks.filter(x=>x.checked);const hint=document.getElementById('categoryHint');if(hint)hint.textContent=`已選 ${selected.length} 個題庫，共 ${selected.reduce((sum,x)=>sum+parseInt(x.closest('.category-item')?.querySelector('.category-count')?.textContent||'0',10)||0,0)} 題可供抽題`; }
-async function beginSelectedAI(){const selected=[...document.querySelectorAll('.category-check:checked')].map(x=>x.value);if(!selected.length){alert('請至少勾選一個題庫。');return}await startAI(selected)}
-document.addEventListener('change',e=>{if(e.target.classList?.contains('category-check'))updateCategoryHint()});
+function toggleAllLibraries(flag){document.querySelectorAll('.library-check').forEach(x=>x.checked=flag);document.querySelectorAll('.unit-check').forEach(x=>x.checked=flag);updateLibraryHint()}
+function updateLibraryHint(){const libs=[...document.querySelectorAll('.library-check:checked')];const units=[...document.querySelectorAll('.unit-check:checked')];const hint=document.getElementById('categoryHint');if(hint)hint.textContent=`已選 ${libs.length} 個題庫、${units.length} 個單元，共可從所選範圍抽題`}
+async function beginSelectedAI(){const selectedLibraries=[...document.querySelectorAll('.library-check:checked')].map(x=>Number(x.value));const selectedUnits=[...document.querySelectorAll('.unit-check:checked')].map(x=>Number(x.value));if(!selectedLibraries.length){alert('請至少勾選一個題庫。');return}await startAI(selectedLibraries,selectedUnits)}
+document.addEventListener('change',e=>{if(e.target.classList?.contains('library-check')){if(!e.target.checked)document.querySelectorAll('.unit-check[data-library=\"'+e.target.value+'\"]')?.forEach(x=>x.checked=false); }if(e.target.classList?.contains('unit-check')){const lib=document.querySelector('.library-check[value=\"'+e.target.dataset.library+'\"]');if(lib&&e.target.checked)lib.checked=true;}if(e.target.classList?.contains('library-check')||e.target.classList?.contains('unit-check'))updateLibraryHint()});
 function speedPoints(elapsed){let t=Math.max(0,Math.min(12,Number(elapsed)||12));return 10+Math.max(0,Math.min(10,Math.round((12-t)*10/12)))}
 function startClock(){questionStarted=performance.now();clearInterval(countdown);let end=questionStarted+12000;countdown=setInterval(()=>{let left=Math.max(0,(end-performance.now())/1000);let el=document.getElementById('timer');if(el)el.textContent=left.toFixed(1)+' 秒';if(left<=0){clearInterval(countdown)}},100)}
 function showAI(){let q=game.questions[game.index];document.getElementById('game').innerHTML=`<div class="muted center">第 ${game.index+1} / ${game.questions.length} 題</div><div class="scoreline"><span>👤 你的本題得分：<b>等待回答</b></span><span>⏱️ <b id="timer">12.0 秒</b></span></div><div class="hero">❤️ HP ${me.hp}</div><div class="question game-question">${q.question}</div><div class="answers">${q.options.map((o,i)=>`<button class="answer" onclick="answerAI(${i+1})">${i+1}. ${o}</button>`).join('')}</div><p class="muted center">答對基本 10 分；越快回答，速度加分越高。答錯：HP -10</p>`;startClock()}
