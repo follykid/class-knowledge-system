@@ -1,7 +1,7 @@
 import os, json, random, string, uuid, csv, io
 from datetime import datetime, timezone
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -167,30 +167,63 @@ def next_question_id():
     last=db.session.query(db.func.max(QuestionBank.id)).scalar()
     return int(last or 0)+1
 
+def normalize_answer_token(value):
+    """把常見的答案表示統一成 1/2/3/4。"""
+    raw=str(value or '').strip().upper()
+    mapping={
+        'A':'1','Ａ':'1','甲':'1','一':'1','1':'1','O':'1','○':'1','⭕':'1','TRUE':'1','T':'1','對':'1','正確':'1','是':'1',
+        'B':'2','Ｂ':'2','乙':'2','二':'2','2':'2','X':'2','×':'2','╳':'2','✕':'2','FALSE':'2','F':'2','錯':'2','錯誤':'2','否':'2',
+        'C':'3','Ｃ':'3','丙':'3','三':'3','3':'3',
+        'D':'4','Ｄ':'4','丁':'4','四':'4','4':'4',
+    }
+    return mapping.get(raw, raw)
+
 def normalize_question_input(data):
-    qtype=str(data.get('qtype',data.get('題型','選擇題'))).strip() or '選擇題'
-    category=str(data.get('category',data.get('分類','未分類'))).strip() or '未分類'
-    question=str(data.get('question',data.get('題目',''))).strip()
-    try: seconds=max(1,min(600,int(data.get('seconds',data.get('秒數',60)))))
+    qtype_raw=str(data.get('qtype',data.get('題型',''))).strip()
+    category=str(data.get('category',data.get('分類',data.get('題庫','未分類題庫')))).strip() or '未分類題庫'
+    question=str(data.get('question',data.get('題目',data.get('題幹','')))).strip()
+    try: seconds=max(1,min(600,int(float(data.get('seconds',data.get('秒數',60)) or 60))))
     except Exception: seconds=60
-    if 'options' in data and isinstance(data.get('options'),list):
-        options=[str(x).strip() for x in data.get('options')]
-    else:
-        options=[str(data.get(f'option{i}',data.get(f'選項{i}',''))).strip() for i in range(1,5)]
-    if qtype in ('是非題','是非','OX','O/X'):
+
+    # 同時支援「選項一」與「選項1／選項A」等常見欄位名稱。
+    def first_value(*keys):
+        for key in keys:
+            value=data.get(key)
+            if value is not None and str(value).strip()!='': return str(value).strip()
+        return ''
+    options=[
+        first_value('option1','選項一','選項1','選項A','A'),
+        first_value('option2','選項二','選項2','選項B','B'),
+        first_value('option3','選項三','選項3','選項C','C'),
+        first_value('option4','選項四','選項4','選項D','D'),
+    ]
+    answer_raw=data.get('correct',data.get('正確答案',data.get('答案','1')))
+    answer_norm=normalize_answer_token(answer_raw)
+
+    # 題型未填時自動判斷：兩個選項是 O/X，或原始答案是 O/X/○/╳，或選項一～四皆空且答案為 1/2。
+    compact_options=[x.upper() for x in options if x!='']
+    is_ox=(qtype_raw in ('是非題','是非','OX','O/X','O／X','判斷題','對錯題'))
+    if not is_ox and compact_options and len(compact_options)==2 and set(compact_options) <= {'O','X','○','╳','×','TRUE','FALSE'}:
+        is_ox=True
+    if not is_ox and not compact_options and answer_norm in ('1','2'):
+        is_ox=True
+
+    if is_ox:
         qtype='是非題'; options=['O','X']
+        if answer_norm not in ('1','2'):
+            raise ValueError(f'是非題的正確答案無法辨識：{answer_raw}')
+        correct=int(answer_norm)
     else:
         qtype='選擇題'
-        options=options[:4]
-        while len(options)<4: options.append('')
-    options=[x for x in options if x!='']
-    try: correct=int(data.get('correct',data.get('正確答案',1)))
-    except Exception: correct=1
+        options=[x for x in options if x!=''][:4]
+        if len(options)<2:
+            raise ValueError('選擇題至少需要 2 個選項')
+        if answer_norm not in ('1','2','3','4'):
+            raise ValueError(f'正確答案無法辨識：{answer_raw}（可填 1~4、A~D、甲~丁）')
+        correct=int(answer_norm)
+        if correct>len(options):
+            raise ValueError(f'正確答案 {correct} 超過實際選項數 {len(options)}')
     if not question: raise ValueError('題目不能是空白')
-    if qtype=='是非題':
-        correct=1 if correct not in (1,2) else correct
-    elif not (1 <= correct <= len(options) <= 4):
-        raise ValueError('正確答案編號或選項數量不正確')
     return qtype,category,seconds,question,options,correct
 
 def get_or_create_library(name, subject='', grade='', description=''):
@@ -784,34 +817,77 @@ def admin_import_questions():
     for enc in ('utf-8-sig','utf-8','cp950','big5'):
         try: text=raw.decode(enc); break
         except UnicodeDecodeError: continue
-    if text is None: return jsonify({'ok':False,'error':'CSV 編碼無法辨識，請使用 UTF-8'}),400
+    if text is None: return jsonify({'ok':False,'error':'CSV 編碼無法辨識，請使用 UTF-8 或 Big5/CP950'}),400
+
     reader=csv.DictReader(io.StringIO(text))
-    required={'題目','選項一','選項二','正確答案'}
-    if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
-        return jsonify({'ok':False,'error':'CSV 至少需要：題目、選項一、選項二、正確答案；新版建議增加「題庫、單元」欄位。'}),400
-    imported=[]; skipped=[]; errors=[]; existing={(q.category.strip(),q.question.strip()) for q in QuestionBank.query.filter_by(active=True).all()}; nid=next_question_id()
+    headers={str(h).strip() for h in (reader.fieldnames or []) if h is not None}
+    question_headers={'題目','題幹'}
+    if not headers.intersection(question_headers):
+        return jsonify({'ok':False,'error':'找不到「題目」或「題幹」欄位。請下載系統提供的 CSV 標準範本。'}),400
+
+    # 不要求每一欄都存在，讓老師可以直接匯入既有的自然／社會／國語 CSV。
+    def row_value(row,*keys,default=''):
+        for key in keys:
+            if key in row and str(row.get(key) or '').strip()!='': return str(row.get(key)).strip()
+        return default
+
+    imported=[]; skipped=[]; errors=[]; nid=next_question_id()
+    # 建立一次快取，避免 900+ 題匯入時每一列都查詢整張題庫。
+    existing={}
+    for q in QuestionBank.query.filter_by(active=True).all():
+        existing.setdefault((q.question.strip(),q.correct,q.options_json),q)
+
     for lineno,row in enumerate(reader,start=2):
         try:
-            library_name=str(row.get('題庫') or row.get('分類') or '').strip() or '未分類題庫'
-            unit_name=str(row.get('單元') or row.get('分類') or '未分類').strip() or '未分類'
-            lib=get_or_create_library(library_name,row.get('科目',''),row.get('年級',''),row.get('題庫說明',''))
-            unit=get_or_create_unit(lib,unit_name)
-            data={'題型':row.get('題型','選擇題'),'分類':library_name,'秒數':row.get('秒數','60'),'題目':row.get('題目',''),'選項一':row.get('選項一',''),'選項二':row.get('選項二',''),'選項三':row.get('選項三',''),'選項四':row.get('選項四',''),'正確答案':row.get('正確答案','1')}
+            library_name=row_value(row,'題庫','題庫名稱','分類','科目',default='未分類題庫')[:100] or '未分類題庫'
+            unit_name=row_value(row,'單元','單元名稱','章節',default='未分類')[:100] or '未分類'
+            subject=row_value(row,'科目',default='')[:50]
+            grade=row_value(row,'年級',default='')[:30]
+            data={
+                'qtype':row_value(row,'題型',default=''),
+                'category':library_name,
+                'seconds':row_value(row,'秒數',default='60'),
+                'question':row_value(row,'題目','題幹',default=''),
+                'option1':row_value(row,'選項一','選項1','選項A','A',default=''),
+                'option2':row_value(row,'選項二','選項2','選項B','B',default=''),
+                'option3':row_value(row,'選項三','選項3','選項C','C',default=''),
+                'option4':row_value(row,'選項四','選項4','選項D','D',default=''),
+                'correct':row_value(row,'正確答案','答案',default='1'),
+            }
             qtype,category,seconds,question,options,correct=normalize_question_input(data)
-            key=(category,question)
-            # 若相同題目已存在，就加入新的題庫/單元，而不是複製題目。
             opts_json=json.dumps(options,ensure_ascii=False)
-            q=None
-            for candidate in QuestionBank.query.filter_by(question=question,correct=correct,active=True).all():
-                if candidate.options_json==opts_json:
-                    q=candidate; break
+            key=(question,correct,opts_json)
+            lib=get_or_create_library(library_name,subject,grade,row_value(row,'題庫說明',default=''))
+            unit=get_or_create_unit(lib,unit_name)
+            q=existing.get(key)
             if q:
-                link_question(q,lib,unit); skipped.append({'line':lineno,'reason':'相同題目已存在，已加入所選題庫','question':question}); continue
+                link_question(q,lib,unit)
+                skipped.append({'line':lineno,'reason':'相同題目已存在，已加入此題庫／單元','question':question})
+                continue
             q=QuestionBank(id=nid,qtype=qtype,category=category,seconds=seconds,question=question,options_json=opts_json,correct=correct,active=True)
-            db.session.add(q); db.session.flush(); link_question(q,lib,unit); imported.append(q); nid+=1
-        except Exception as e: errors.append({'line':lineno,'error':str(e)})
-    if errors and not imported and not skipped: db.session.rollback(); return jsonify({'ok':False,'error':'沒有成功匯入任何題目','errors':errors[:20]}),400
-    db.session.commit(); return jsonify({'ok':True,'imported':len(imported),'skipped':len(skipped),'errors':errors[:20],'total':QuestionBank.query.filter_by(active=True).count()})
+            db.session.add(q); db.session.flush(); link_question(q,lib,unit)
+            existing[key]=q; imported.append(q); nid+=1
+        except Exception as e:
+            errors.append({'line':lineno,'question':row_value(row,'題目','題幹',default=''),'error':str(e)})
+
+    if errors and not imported and not skipped:
+        db.session.rollback()
+        return jsonify({'ok':False,'error':'沒有成功匯入任何題目','errors':errors[:30]}),400
+    db.session.commit()
+    return jsonify({'ok':True,'imported':len(imported),'skipped':len(skipped),'errors':errors[:30],'total':QuestionBank.query.filter_by(active=True).count()})
+
+@app.get('/api/admin/questions/template')
+def admin_question_template():
+    u=current_user()
+    if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
+    output=io.StringIO(newline='')
+    writer=csv.writer(output)
+    writer.writerow(['題庫','單元','科目','年級','題型','秒數','題目','選項一','選項二','選項三','選項四','正確答案'])
+    writer.writerow(['自然五上','第一單元','自然','五年級','是非題','60','陽光可以用來晒乾衣服。','O','X','','','1'])
+    writer.writerow(['國語五上','第一課','國語','五年級','選擇題','60','請輸入題目','選項A','選項B','選項C','選項D','1'])
+    resp=Response('\ufeff'+output.getvalue(),mimetype='text/csv; charset=utf-8')
+    resp.headers['Content-Disposition']='attachment; filename=question_bank_import_template.csv'
+    return resp
 
 @app.post('/api/admin/questions/<int:q_id>/link')
 def admin_link_question(q_id):
