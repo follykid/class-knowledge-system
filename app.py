@@ -430,7 +430,7 @@ def display_leaderboard():
         claimed=ScoreEvent.query.filter_by(event_id=toothbrush_event_id).first() is not None
         items.append({
             'id':student.id, 'rank':i, 'account':student.account, 'name':student.name, 'seat':student.seat,
-            'score':student.score, 'hp':student.hp, 'wins':student.wins, 'losses':student.losses,
+            'score':student.score, 'hp':student.hp, 'wins':student.wins, 'losses':student.losses, 'battle_score':student.battle_score,
             'toothbrush_claimed_today':claimed,
             'cards':[{'id':draw.id, 'name':card.name, 'description':card.description} for draw,card in owned]
         })
