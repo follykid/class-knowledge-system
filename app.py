@@ -1,5 +1,6 @@
 import os, json, random, string, uuid, csv, io
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response
 from flask_sqlalchemy import SQLAlchemy
@@ -416,12 +417,36 @@ def display_leaderboard():
                .join(PrizeCard, PrizeDraw.card_id==PrizeCard.id)
                .filter(PrizeDraw.student_id==student.id, PrizeDraw.status=='pending')
                .order_by(PrizeDraw.created_at.desc()).all())
+        today=datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+        toothbrush_event_id=f'toothbrush:{today}:{student.id}'
+        claimed=ScoreEvent.query.filter_by(event_id=toothbrush_event_id).first() is not None
         items.append({
-            'rank':i, 'account':student.account, 'name':student.name, 'seat':student.seat,
+            'id':student.id, 'rank':i, 'account':student.account, 'name':student.name, 'seat':student.seat,
             'score':student.score, 'hp':student.hp, 'wins':student.wins, 'losses':student.losses,
+            'toothbrush_claimed_today':claimed,
             'cards':[{'id':draw.id, 'name':card.name, 'description':card.description} for draw,card in owned]
         })
     return jsonify({'ok':True,'items':items})
+
+@app.post('/api/display/toothbrush/<int:student_id>')
+def display_toothbrush(student_id):
+    student=db.session.get(Student,student_id)
+    if not student or student.role!='student':
+        return jsonify({'ok':False,'error':'學生不存在'}),404
+    today=datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+    event_id=f'toothbrush:{today}:{student.id}'
+    if ScoreEvent.query.filter_by(event_id=event_id).first():
+        return jsonify({'ok':False,'already_claimed':True,'error':'今天已完成潔牙','score':student.score}),409
+    try:
+        add_score(student,1,'午間潔牙獎勵',event_id)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        student=db.session.get(Student,student_id)
+        if ScoreEvent.query.filter_by(event_id=event_id).first():
+            return jsonify({'ok':False,'already_claimed':True,'error':'今天已完成潔牙','score':student.score}),409
+        raise
+    return jsonify({'ok':True,'score':student.score,'message':'潔牙成功，積分 +1'})
 @app.get('/api/question-libraries')
 @login_required
 def question_libraries():
