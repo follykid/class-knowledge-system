@@ -340,6 +340,9 @@ def teacher(): return render_template('teacher.html')
 def game(): return render_template('game.html')
 @app.route('/display')
 def display(): return render_template('display.html')
+
+@app.route('/display/toothbrush')
+def display_toothbrush_page(): return render_template('toothbrush.html')
 @app.post('/api/login')
 def api_login():
     data=request.get_json() or {}; account=str(data.get('account','')).strip(); pwd=str(data.get('password',''))
