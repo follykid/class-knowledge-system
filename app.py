@@ -413,7 +413,12 @@ def admin_clear_messages():
 @app.get('/api/display/leaderboard')
 def display_leaderboard():
     # 大螢幕專用資料：排名、座號、積分與尚未兌換的寶物卡。
-    rows=Student.query.filter(Student.role=='student').order_by(Student.score.desc(),Student.seat.asc()).all()
+    mode=request.args.get('mode','score')
+    rows=Student.query.filter(Student.role=='student').all()
+    if mode=='battle':
+        rows.sort(key=lambda s:(-int(s.wins or 0), int(s.losses or 0), -int(s.battle_score or 0), int(s.seat or 0)))
+    else:
+        rows.sort(key=lambda s:(-int(s.score or 0), int(s.seat or 0)))
     items=[]
     for i, student in enumerate(rows, 1):
         owned=(db.session.query(PrizeDraw, PrizeCard)
