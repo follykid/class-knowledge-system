@@ -42,7 +42,7 @@
       <div class="login-note">
         <span>👨‍🎓 學生</span> 使用個人學號登入
         <span class="divider">｜</span>
-        <span>👨‍🏫 教師</span> 使用教師帳號登入
+        <span>👨‍🏫 教師</span> 使用教師帳號登入<span class="divider">｜</span><span>🪥 潔牙長</span> 使用潔牙長帳號登入
       </div>
     </section>
   </main>
@@ -71,7 +71,7 @@ async function login(){
       msg.innerHTML='<div class="notice err">'+(d.error||'登入失敗，請確認帳號與密碼。')+'</div>';
       return;
     }
-    location.href=d.user.role==='teacher'?'/teacher':'/student';
+    location.href=d.user.role==='teacher'?'/teacher':(d.user.role==='toothbrush'?'/display/toothbrush':'/student');
   }catch(e){
     msg.innerHTML='<div class="notice err">目前無法連線，請稍後再試。</div>';
   }finally{

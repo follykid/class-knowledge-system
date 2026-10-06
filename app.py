@@ -282,6 +282,13 @@ def seed():
             db.session.add(Student(account=account,name=name,password_hash=generate_password_hash(pwd),seat=seat,role='student'))
         db.session.add(Student(account='teacher',name='老師',password_hash=generate_password_hash('1930'),seat=0,role='teacher'))
         db.session.add(Student(account='teacher01',name='小明',password_hash=generate_password_hash('1930'),seat=0,role='student'))
+    # 潔牙長專用帳號：第一次建立時使用預設密碼；既有資料庫也會自動補上。
+    toothbrush_user=Student.query.filter_by(account='toothbrush').first()
+    if not toothbrush_user:
+        db.session.add(Student(account='toothbrush',name='潔牙長',password_hash=generate_password_hash('504888'),seat=0,role='toothbrush'))
+    else:
+        toothbrush_user.name='潔牙長'
+        toothbrush_user.role='toothbrush'
     for _s in Student.query.all():
         if _s.role in ('student','teacher') and _s.hp == 20: _s.hp=100
         if _s.battle_score is None: _s.battle_score=0
@@ -341,7 +348,19 @@ def game(): return render_template('game.html')
 @app.route('/display')
 def display(): return render_template('display.html')
 
+def toothbrush_access_required(fn):
+    @wraps(fn)
+    def wrap(*a,**kw):
+        u=current_user()
+        if not u:
+            return redirect(url_for('index'))
+        if u.role not in ('teacher','toothbrush'):
+            return redirect(url_for('student'))
+        return fn(*a,**kw)
+    return wrap
+
 @app.route('/display/toothbrush')
+@toothbrush_access_required
 def display_toothbrush_page(): return render_template('toothbrush.html')
 @app.post('/api/login')
 def api_login():
@@ -417,6 +436,8 @@ def display_leaderboard():
     rows=Student.query.filter(Student.role=='student').all()
     if mode=='battle':
         rows.sort(key=lambda s:(-int(s.wins or 0), int(s.losses or 0), -int(s.battle_score or 0), int(s.seat or 0)))
+    elif mode=='toothbrush':
+        rows.sort(key=lambda s:int(s.seat or 999))
     else:
         rows.sort(key=lambda s:(-int(s.score or 0), int(s.seat or 0)))
     items=[]
@@ -437,7 +458,11 @@ def display_leaderboard():
     return jsonify({'ok':True,'items':items})
 
 @app.post('/api/display/toothbrush/<int:student_id>')
+@login_required
 def display_toothbrush(student_id):
+    u=current_user()
+    if u.role not in ('teacher','toothbrush'):
+        return jsonify({'ok':False,'error':'需要教師或潔牙長權限'}),403
     student=db.session.get(Student,student_id)
     if not student or student.role!='student':
         return jsonify({'ok':False,'error':'學生不存在'}),404
@@ -550,8 +575,14 @@ def quiz_finish():
     if mode not in ('ai','real'): mode='ai'
     battle_score=max(0,int(data.get('battle_score',0)))
     won=bool(data.get('win'))
-    # 勝者：本場總得分 100% 轉成 HP；敗者：總得分 50% 轉成 HP。
-    earned_hp=battle_score if won else battle_score//2
+    # AI 對戰：勝者 100%、敗者 40%；真人對戰：勝者 100%、敗者 50%。
+    # AI 對戰同樣計入學生的勝負累積。
+    if won:
+        earned_hp=battle_score
+    elif mode=='ai':
+        earned_hp=battle_score*40//100
+    else:
+        earned_hp=battle_score//2
     u.battle_score=battle_score
     u.hp=max(0,u.hp)+earned_hp
     # 不自動把 HP 換成班級積分；玩家必須在學生頁手動兌換。
