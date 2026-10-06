@@ -111,6 +111,7 @@ class RoomPlayer(db.Model):
     correct_count=db.Column(db.Integer,default=0)
     battle_score=db.Column(db.Integer,default=0)
     joined_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+    last_seen=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=True)
     __table_args__=(db.UniqueConstraint('room_id','student_id',name='uq_room_student'),)
 
 class PrizeCard(db.Model):
@@ -269,7 +270,7 @@ def seed():
     upgrades={
         'student': [('battle_score','INTEGER DEFAULT 0')],
         'room': [('question_started_at','TIMESTAMP NULL')],
-        'room_player': [('battle_score','INTEGER DEFAULT 0')],
+        'room_player': [('battle_score','INTEGER DEFAULT 0'),('last_seen','TIMESTAMP NULL')],
     }
     for table, cols in upgrades.items():
         existing={c['name'] for c in inspect(db.engine).get_columns(table)}
@@ -332,6 +333,38 @@ def add_score(student,delta,reason,event_id):
 def leaderboard_data():
     rows=Student.query.filter(Student.role=='student').order_by(Student.score.desc(),Student.seat.asc()).all()
     return [{'rank':i+1,'account':s.account,'name':s.name,'seat':s.seat,'score':s.score,'hp':s.hp,'battle_score':s.battle_score,'wins':s.wins,'losses':s.losses,'online':bool(s.online)} for i,s in enumerate(rows)]
+
+ROOM_TIMEOUT_SECONDS=15
+
+def cleanup_stale_rooms():
+    """清理真人對戰中的幽靈玩家與空房間。
+    玩家超過 15 秒沒有心跳就視為離線；等待中的空房間直接刪除。
+    """
+    now=datetime.now(timezone.utc)
+    changed=False
+    rooms=Room.query.filter(Room.status.in_(['waiting','playing'])).all()
+    for r in rooms:
+        players=RoomPlayer.query.filter_by(room_id=r.id).all()
+        for p in players:
+            seen=p.last_seen or p.joined_at or r.created_at
+            if seen:
+                if seen.tzinfo is None:
+                    seen=seen.replace(tzinfo=timezone.utc)
+                age=(now-seen).total_seconds()
+                if age>ROOM_TIMEOUT_SECONDS:
+                    db.session.delete(p)
+                    changed=True
+        # flush 後重新取得剩餘玩家，避免舊玩家繼續讓房間看起來有人。
+        db.session.flush()
+        remaining=RoomPlayer.query.filter_by(room_id=r.id).all()
+        if not remaining:
+            db.session.delete(r)
+            changed=True
+        elif r.status=='playing' and len(remaining)<2:
+            r.status='finished'
+            changed=True
+    if changed:
+        db.session.commit()
 
 def room_state(room):
     players=RoomPlayer.query.filter_by(room_id=room.id).all()
@@ -618,30 +651,42 @@ def validate_answer():
 @app.post('/api/rooms')
 @login_required
 def create_room():
+    cleanup_stale_rooms()
     u=current_user();
-    if u.role=='teacher': return jsonify({'ok':False,'error':'教師管理帳號不能建立對戰房間'}),403
+    if u.role!='student': return jsonify({'ok':False,'error':'只有學生可以建立真人對戰房間'}),403
+    existing=(db.session.query(RoomPlayer).join(Room,Room.id==RoomPlayer.room_id)
+              .filter(RoomPlayer.student_id==u.id,Room.status.in_(['waiting','playing'])).first())
+    if existing:
+        return jsonify({'ok':False,'error':'你目前已在真人對戰房間中，請先離開原房間。'}),400
     for _ in range(20):
         code=''.join(random.choices(string.ascii_uppercase+string.digits,k=5))
         if not Room.query.filter_by(code=code).first(): break
     bank=active_questions(); qs=random.sample(bank,min(10,len(bank)))
     room=Room(code=code,host_id=u.id,question_ids=json.dumps([q['id'] for q in qs]),status='waiting')
-    db.session.add(room); db.session.flush(); db.session.add(RoomPlayer(room_id=room.id,student_id=u.id)); db.session.commit()
+    db.session.add(room); db.session.flush(); db.session.add(RoomPlayer(room_id=room.id,student_id=u.id,last_seen=datetime.now(timezone.utc))); db.session.commit()
     return jsonify({'ok':True,'room':room_state(room)})
 @app.get('/api/rooms')
 @login_required
 def rooms():
+    cleanup_stale_rooms()
     rs=Room.query.filter_by(status='waiting').order_by(Room.created_at.desc()).limit(15).all()
     return jsonify({'ok':True,'rooms':[room_state(r) for r in rs]})
 @app.post('/api/rooms/<code>/join')
 @login_required
 def join_room(code):
+    cleanup_stale_rooms()
     u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
     if not r or r.status!='waiting': return jsonify({'ok':False,'error':'房間不存在或已開始'}),404
     existing=RoomPlayer.query.filter_by(room_id=r.id,student_id=u.id).first()
     if existing is None:
+        other=(db.session.query(RoomPlayer).join(Room,Room.id==RoomPlayer.room_id)
+               .filter(RoomPlayer.student_id==u.id,Room.id!=r.id,Room.status.in_(['waiting','playing'])).first())
+        if other:
+            return jsonify({'ok':False,'error':'你目前已在其他真人對戰房間中，請先離開原房間。'}),400
         if RoomPlayer.query.filter_by(room_id=r.id).count()>=2: return jsonify({'ok':False,'error':'房間已滿'}),400
-        db.session.add(RoomPlayer(room_id=r.id,student_id=u.id))
+        db.session.add(RoomPlayer(room_id=r.id,student_id=u.id,last_seen=datetime.now(timezone.utc)))
         db.session.flush()
+    existing.last_seen=datetime.now(timezone.utc) if existing else datetime.now(timezone.utc)
     # 第二位玩家加入後立即開戰，不再需要房主另外按「開始對戰」。
     players=RoomPlayer.query.filter_by(room_id=r.id).all()
     if len(players)>=2:
@@ -675,9 +720,24 @@ def leave_room(code):
     db.session.commit()
     return jsonify({'ok':True,'gone':False,'room':room_state(r)})
 
+@app.post('/api/rooms/<code>/heartbeat')
+@login_required
+def room_heartbeat(code):
+    cleanup_stale_rooms()
+    u=current_user(); r=Room.query.filter_by(code=code.upper()).first()
+    if not r or r.status not in ('waiting','playing'):
+        return jsonify({'ok':False,'error':'房間不存在或已結束'}),404
+    p=RoomPlayer.query.filter_by(room_id=r.id,student_id=u.id).first()
+    if not p:
+        return jsonify({'ok':False,'error':'你已不在此房間'}),404
+    p.last_seen=datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'ok':True,'room':room_state(r)})
+
 @app.get('/api/rooms/<code>')
 @login_required
 def get_room(code):
+    cleanup_stale_rooms()
     r=Room.query.filter_by(code=code.upper()).first()
     if not r: return jsonify({'ok':False,'error':'找不到房間'}),404
     return jsonify({'ok':True,'room':room_state(r)})
