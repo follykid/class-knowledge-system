@@ -1,13 +1,14 @@
-import os, json, random, string, uuid, csv, io
+import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, after_this_request
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR=os.path.dirname(os.path.abspath(__file__))
 app=Flask(__name__)
+app.config['MAX_CONTENT_LENGTH']=100*1024*1024
 app.config['SECRET_KEY']=os.environ.get('SECRET_KEY','fresh-v1-change-me')
 db_url=os.environ.get('DATABASE_URL','sqlite:///'+os.path.join(BASE_DIR,'data.db'))
 if db_url.startswith('postgres://'): db_url=db_url.replace('postgres://','postgresql+psycopg://',1)
@@ -854,6 +855,114 @@ def admin_score():
     s=db.session.get(Student,sid)
     if not s or s.role!='student': return jsonify({'ok':False,'error':'學生不存在'}),404
     add_score(s,delta,reason,'admin:'+str(uuid.uuid4())); db.session.commit(); return jsonify({'ok':True,'score':s.score})
+# ===== 老師專用：資料庫備份／還原 =====
+def _sqlite_database_path():
+    """回傳目前 SQLite 資料庫實體路徑；PostgreSQL 等資料庫則回傳 None。"""
+    url = str(app.config.get('SQLALCHEMY_DATABASE_URI', ''))
+    if not url.startswith('sqlite:///') or url.startswith('sqlite:///:memory:'):
+        return None
+    path = url[len('sqlite:///'):]
+    if path.startswith('/'):  # sqlite:////absolute/path.db
+        db_path = path
+    else:
+        db_path = os.path.join(BASE_DIR, path) if not os.path.isabs(path) else path
+    return os.path.abspath(db_path)
+
+def _teacher_only():
+    u=current_user()
+    if not u or u.role!='teacher':
+        return None, (jsonify({'ok':False,'error':'需要教師權限'}),403)
+    return u, None
+
+@app.get('/api/admin/database/backup')
+def admin_database_backup():
+    """下載目前 SQLite 資料庫的安全備份。"""
+    u,err=_teacher_only()
+    if err: return err
+    db_path=_sqlite_database_path()
+    if not db_path or not os.path.exists(db_path):
+        return jsonify({'ok':False,'error':'目前不是 SQLite 資料庫，或找不到資料庫檔案。'}),400
+    # 用 SQLite backup API 產生一致性的快照，避免直接複製正在寫入中的檔案。
+    stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
+    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_backup_',suffix='.db')
+    os.close(fd)
+    try:
+        src=sqlite3.connect(db_path)
+        dst=sqlite3.connect(tmp_path)
+        with dst:
+            src.backup(dst)
+        src.close(); dst.close()
+        @after_this_request
+        def _cleanup_backup(response):
+            try: os.unlink(tmp_path)
+            except Exception: pass
+            return response
+        return send_file(tmp_path,as_attachment=True,download_name=f'班級知識系統_資料庫備份_{stamp}.db',mimetype='application/octet-stream')
+    except Exception as e:
+        try: os.unlink(tmp_path)
+        except Exception: pass
+        return jsonify({'ok':False,'error':f'備份失敗：{e}'}),500
+
+@app.post('/api/admin/database/restore')
+def admin_database_restore():
+    """老師上傳 SQLite 備份並還原；還原前會先在伺服器端留存一份目前資料庫備份。"""
+    u,err=_teacher_only()
+    if err: return err
+    db_path=_sqlite_database_path()
+    if not db_path or not os.path.exists(db_path):
+        return jsonify({'ok':False,'error':'目前不是 SQLite 資料庫，或找不到資料庫檔案。'}),400
+    upload=request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'ok':False,'error':'請選擇 .db 備份檔。'}),400
+    ext=os.path.splitext(upload.filename)[1].lower()
+    if ext not in ('.db','.sqlite','.sqlite3'):
+        return jsonify({'ok':False,'error':'只接受 .db、.sqlite 或 .sqlite3 備份檔。'}),400
+
+    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_restore_',suffix='.db')
+    os.close(fd)
+    try:
+        upload.save(tmp_path)
+        check=sqlite3.connect(tmp_path)
+        integrity=check.execute('PRAGMA integrity_check').fetchone()[0]
+        tables={r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        required={'student','score_event','question_bank','room','room_player'}
+        missing=required-tables
+        check.close()
+        if integrity!='ok':
+            return jsonify({'ok':False,'error':'這個備份檔的 SQLite 完整性檢查沒有通過，沒有進行還原。'}),400
+        if missing:
+            return jsonify({'ok':False,'error':'這不是本系統的資料庫備份，缺少必要資料表：'+', '.join(sorted(missing))}),400
+
+        # 還原前自動留存目前版本，避免誤還原後無法回復。
+        backup_dir=os.path.join(BASE_DIR,'database_backups')
+        os.makedirs(backup_dir,exist_ok=True)
+        stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
+        safety=os.path.join(backup_dir,f'pre_restore_{stamp}.db')
+        src=sqlite3.connect(db_path)
+        dst=sqlite3.connect(safety)
+        with dst: src.backup(dst)
+        src.close(); dst.close()
+
+        # 關閉 SQLAlchemy 連線池後，以 SQLite backup API 還原。
+        db.session.remove()
+        db.engine.dispose()
+        src=sqlite3.connect(tmp_path)
+        dst=sqlite3.connect(db_path)
+        with dst: src.backup(dst)
+        src.close(); dst.close()
+        db.engine.dispose()
+        with app.app_context():
+            # 確保 SQLAlchemy 重新建立連線後 schema 可讀。
+            from sqlalchemy import text
+            db.session.execute(text('SELECT 1'))
+            db.session.commit()
+        return jsonify({'ok':True,'message':'資料庫已成功還原。還原前的版本也已自動保存在伺服器的 database_backups 資料夾。'})
+    except Exception as e:
+        return jsonify({'ok':False,'error':f'還原失敗：{e}'}),500
+    finally:
+        try: os.unlink(tmp_path)
+        except Exception: pass
+
 @app.get('/api/admin/students')
 def admin_students():
     u=current_user();
