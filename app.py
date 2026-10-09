@@ -1,6 +1,16 @@
 import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+def utc_iso(dt):
+    """Serialize DB datetimes as explicit UTC so browsers convert them to Asia/Taipei correctly."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace('+00:00', 'Z')
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, after_this_request
 from flask_sqlalchemy import SQLAlchemy
@@ -816,7 +826,7 @@ def prizes():
     u=current_user()
     cards=PrizeCard.query.order_by(PrizeCard.id).all()
     owned=(db.session.query(PrizeDraw,PrizeCard).join(PrizeCard,PrizeDraw.card_id==PrizeCard.id).filter(PrizeDraw.student_id==u.id,PrizeDraw.status=='pending').order_by(PrizeDraw.created_at.desc()).all())
-    return jsonify({'ok':True,'cost':20,'cards':[{'id':c.id,'name':c.name,'weight':c.weight,'description':c.description} for c in cards], 'owned':[{'id':d.id,'name':c.name,'description':c.description,'status':d.status,'created_at':d.created_at.isoformat()} for d,c in owned]})
+    return jsonify({'ok':True,'cost':20,'cards':[{'id':c.id,'name':c.name,'weight':c.weight,'description':c.description} for c in cards], 'owned':[{'id':d.id,'name':c.name,'description':c.description,'status':d.status,'created_at':utc_iso(d.created_at)} for d,c in owned]})
 
 @app.post('/api/prizes/draw')
 @login_required
@@ -845,7 +855,7 @@ def admin_prizes():
     u=current_user()
     if not u or u.role!='teacher': return jsonify({'ok':False,'error':'需要教師權限'}),403
     rows=(db.session.query(PrizeDraw,PrizeCard,Student).join(PrizeCard,PrizeDraw.card_id==PrizeCard.id).join(Student,PrizeDraw.student_id==Student.id).filter(PrizeDraw.status=='pending').order_by(PrizeDraw.created_at.desc()).all())
-    return jsonify({'ok':True,'items':[{'id':d.id,'student_id':s.id,'name':s.name,'account':s.account,'seat':s.seat,'card':c.name,'description':c.description,'created_at':d.created_at.isoformat()} for d,c,s in rows]})
+    return jsonify({'ok':True,'items':[{'id':d.id,'student_id':s.id,'name':s.name,'account':s.account,'seat':s.seat,'card':c.name,'description':c.description,'created_at':utc_iso(d.created_at)} for d,c,s in rows]})
 
 @app.post('/api/admin/score')
 def admin_score():
