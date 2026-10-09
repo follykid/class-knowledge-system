@@ -865,18 +865,21 @@ def admin_score():
     s=db.session.get(Student,sid)
     if not s or s.role!='student': return jsonify({'ok':False,'error':'學生不存在'}),404
     add_score(s,delta,reason,'admin:'+str(uuid.uuid4())); db.session.commit(); return jsonify({'ok':True,'score':s.score})
-# ===== 老師專用：資料庫備份／還原 =====
+# ===== 老師專用：資料庫備份／還原（支援 SQLite 與 Render PostgreSQL） =====
 def _sqlite_database_path():
     """回傳目前 SQLite 資料庫實體路徑；PostgreSQL 等資料庫則回傳 None。"""
     url = str(app.config.get('SQLALCHEMY_DATABASE_URI', ''))
     if not url.startswith('sqlite:///') or url.startswith('sqlite:///:memory:'):
         return None
     path = url[len('sqlite:///'):]
-    if path.startswith('/'):  # sqlite:////absolute/path.db
+    if path.startswith('/'):
         db_path = path
     else:
         db_path = os.path.join(BASE_DIR, path) if not os.path.isabs(path) else path
     return os.path.abspath(db_path)
+
+def _is_postgres():
+    return str(app.config.get('SQLALCHEMY_DATABASE_URI', '')).startswith(('postgresql://','postgresql+'))
 
 def _teacher_only():
     u=current_user()
@@ -884,23 +887,76 @@ def _teacher_only():
         return None, (jsonify({'ok':False,'error':'需要教師權限'}),403)
     return u, None
 
+def _json_backup_default(value):
+    if isinstance(value, datetime):
+        return {'__class__':'datetime','value':value.isoformat()}
+    if hasattr(value, 'isoformat'):
+        return {'__class__':value.__class__.__name__,'value':value.isoformat()}
+    if isinstance(value, bytes):
+        import base64
+        return {'__class__':'bytes','value':base64.b64encode(value).decode('ascii')}
+    raise TypeError(f'無法備份資料型別：{type(value).__name__}')
+
+def _json_backup_hook(value):
+    kind=value.get('__class__') if isinstance(value,dict) else None
+    raw=value.get('value') if isinstance(value,dict) else None
+    if kind=='datetime': return datetime.fromisoformat(raw)
+    if kind=='date':
+        from datetime import date
+        return date.fromisoformat(raw)
+    if kind=='time':
+        from datetime import time
+        return time.fromisoformat(raw)
+    if kind=='bytes':
+        import base64
+        return base64.b64decode(raw)
+    return value
+
+def _make_postgres_backup():
+    """產生含所有 SQLAlchemy 資料表資料的邏輯備份，可在 Render 無 pg_dump 時使用。"""
+    from sqlalchemy import select
+    tables=list(db.metadata.sorted_tables)
+    payload={'format':'class-knowledge-system-logical-backup','version':1,
+             'created_at':datetime.now(timezone.utc).isoformat(), 'tables':{}}
+    conn=db.engine.connect()
+    try:
+        trans=conn.begin()
+        try:
+            # PostgreSQL 使用唯讀交易，確保備份期間讀取一致快照。
+            if _is_postgres():
+                conn.exec_driver_sql('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            for table in tables:
+                rows=conn.execute(select(table)).mappings().all()
+                payload['tables'][table.name]=[dict(row) for row in rows]
+            trans.commit()
+        except Exception:
+            trans.rollback(); raise
+    finally:
+        conn.close()
+    return json.dumps(payload,ensure_ascii=False,default=_json_backup_default,separators=(',',':')).encode('utf-8')
+
 @app.get('/api/admin/database/backup')
 def admin_database_backup():
-    """下載目前 SQLite 資料庫的安全備份。"""
+    """下載目前資料庫備份：SQLite 為 .db；PostgreSQL 為完整邏輯 .json。"""
     u,err=_teacher_only()
     if err: return err
+    stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
+    if _is_postgres():
+        try:
+            content=_make_postgres_backup()
+            return Response(content, mimetype='application/json; charset=utf-8', headers={
+                'Content-Disposition':f"attachment; filename*=UTF-8''{__import__('urllib.parse').parse.quote('班級知識系統_資料庫備份_'+stamp+'.json')}"
+            })
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'ok':False,'error':f'PostgreSQL 備份失敗：{e}'}),500
     db_path=_sqlite_database_path()
     if not db_path or not os.path.exists(db_path):
-        return jsonify({'ok':False,'error':'目前不是 SQLite 資料庫，或找不到資料庫檔案。'}),400
-    # 用 SQLite backup API 產生一致性的快照，避免直接複製正在寫入中的檔案。
-    stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
-    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_backup_',suffix='.db')
-    os.close(fd)
+        return jsonify({'ok':False,'error':'找不到 SQLite 資料庫檔案。'}),400
+    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_backup_',suffix='.db'); os.close(fd)
     try:
-        src=sqlite3.connect(db_path)
-        dst=sqlite3.connect(tmp_path)
-        with dst:
-            src.backup(dst)
+        src=sqlite3.connect(db_path); dst=sqlite3.connect(tmp_path)
+        with dst: src.backup(dst)
         src.close(); dst.close()
         @after_this_request
         def _cleanup_backup(response):
@@ -911,62 +967,83 @@ def admin_database_backup():
     except Exception as e:
         try: os.unlink(tmp_path)
         except Exception: pass
-        return jsonify({'ok':False,'error':f'備份失敗：{e}'}),500
+        return jsonify({'ok':False,'error':f'SQLite 備份失敗：{e}'}),500
 
 @app.post('/api/admin/database/restore')
 def admin_database_restore():
-    """老師上傳 SQLite 備份並還原；還原前會先在伺服器端留存一份目前資料庫備份。"""
+    """支援 SQLite .db 備份，以及 PostgreSQL 使用的本系統 .json 邏輯備份。"""
     u,err=_teacher_only()
     if err: return err
-    db_path=_sqlite_database_path()
-    if not db_path or not os.path.exists(db_path):
-        return jsonify({'ok':False,'error':'目前不是 SQLite 資料庫，或找不到資料庫檔案。'}),400
     upload=request.files.get('file')
     if not upload or not upload.filename:
-        return jsonify({'ok':False,'error':'請選擇 .db 備份檔。'}),400
+        return jsonify({'ok':False,'error':'請選擇資料庫備份檔。'}),400
     ext=os.path.splitext(upload.filename)[1].lower()
+    if _is_postgres():
+        if ext!='.json':
+            return jsonify({'ok':False,'error':'目前 Render 使用 PostgreSQL，請選擇由本系統下載的 .json 備份檔。'}),400
+        try:
+            payload=json.loads(upload.read().decode('utf-8'),object_hook=_json_backup_hook)
+            if payload.get('format')!='class-knowledge-system-logical-backup' or payload.get('version')!=1 or not isinstance(payload.get('tables'),dict):
+                return jsonify({'ok':False,'error':'備份格式不正確，沒有進行還原。'}),400
+            tables=list(db.metadata.sorted_tables)
+            expected={t.name for t in tables}
+            supplied=set(payload['tables'])
+            if expected-supplied:
+                return jsonify({'ok':False,'error':'備份缺少資料表：'+', '.join(sorted(expected-supplied))}),400
+            # 先在伺服器端保存現況；即使瀏覽器關閉也能留下復原點。
+            safety=_make_postgres_backup()
+            backup_dir=os.path.join(BASE_DIR,'database_backups'); os.makedirs(backup_dir,exist_ok=True)
+            stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
+            with open(os.path.join(backup_dir,f'pre_restore_{stamp}.json'),'wb') as f: f.write(safety)
+            # 同一交易中清空並回填，失敗即 rollback，避免留下半套資料。
+            from sqlalchemy import text, insert, delete
+            with db.engine.begin() as conn:
+                for table in reversed(tables): conn.execute(delete(table))
+                for table in tables:
+                    rows=payload['tables'].get(table.name,[])
+                    if rows:
+                        valid={c.name for c in table.columns}
+                        cleaned=[{k:v for k,v in row.items() if k in valid} for row in rows]
+                        conn.execute(insert(table),cleaned)
+                # 將整數主鍵序列同步到還原後的最大 ID，避免新增資料時撞號。
+                for table in tables:
+                    pk=list(table.primary_key.columns)
+                    if len(pk)==1 and str(pk[0].type).upper().startswith(('INTEGER','BIGINT')):
+                        col=pk[0].name
+                        conn.execute(text("SELECT setval(pg_get_serial_sequence(:table_name, :column_name), COALESCE((SELECT MAX(\""+col+"\") FROM \""+table.name+"\"), 1), (SELECT MAX(\""+col+"\") IS NOT NULL FROM \""+table.name+"\"))"),{'table_name':table.name,'column_name':col})
+            db.session.remove()
+            return jsonify({'ok':True,'message':'PostgreSQL 資料庫已成功還原；還原前資料也已備份至伺服器 database_backups。請重新整理頁面。'})
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception('PostgreSQL 還原失敗')
+            return jsonify({'ok':False,'error':f'PostgreSQL 還原失敗，交易已取消：{e}'}),500
+    db_path=_sqlite_database_path()
+    if not db_path or not os.path.exists(db_path):
+        return jsonify({'ok':False,'error':'找不到 SQLite 資料庫檔案。'}),400
     if ext not in ('.db','.sqlite','.sqlite3'):
-        return jsonify({'ok':False,'error':'只接受 .db、.sqlite 或 .sqlite3 備份檔。'}),400
-
-    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_restore_',suffix='.db')
-    os.close(fd)
+        return jsonify({'ok':False,'error':'目前 SQLite 模式只接受 .db、.sqlite 或 .sqlite3 備份檔。'}),400
+    fd,tmp_path=tempfile.mkstemp(prefix='class_knowledge_restore_',suffix='.db'); os.close(fd)
     try:
         upload.save(tmp_path)
         check=sqlite3.connect(tmp_path)
         integrity=check.execute('PRAGMA integrity_check').fetchone()[0]
         tables={r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         required={'student','score_event','question_bank','room','room_player'}
-        missing=required-tables
-        check.close()
-        if integrity!='ok':
-            return jsonify({'ok':False,'error':'這個備份檔的 SQLite 完整性檢查沒有通過，沒有進行還原。'}),400
-        if missing:
-            return jsonify({'ok':False,'error':'這不是本系統的資料庫備份，缺少必要資料表：'+', '.join(sorted(missing))}),400
-
-        # 還原前自動留存目前版本，避免誤還原後無法回復。
-        backup_dir=os.path.join(BASE_DIR,'database_backups')
-        os.makedirs(backup_dir,exist_ok=True)
-        stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S')
-        safety=os.path.join(backup_dir,f'pre_restore_{stamp}.db')
-        src=sqlite3.connect(db_path)
-        dst=sqlite3.connect(safety)
+        missing=required-tables; check.close()
+        if integrity!='ok': return jsonify({'ok':False,'error':'備份檔 SQLite 完整性檢查未通過。'}),400
+        if missing: return jsonify({'ok':False,'error':'不是本系統資料庫，缺少資料表：'+', '.join(sorted(missing))}),400
+        backup_dir=os.path.join(BASE_DIR,'database_backups'); os.makedirs(backup_dir,exist_ok=True)
+        stamp=datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y%m%d_%H%M%S'); safety=os.path.join(backup_dir,f'pre_restore_{stamp}.db')
+        src=sqlite3.connect(db_path); dst=sqlite3.connect(safety)
         with dst: src.backup(dst)
-        src.close(); dst.close()
-
-        # 關閉 SQLAlchemy 連線池後，以 SQLite backup API 還原。
-        db.session.remove()
-        db.engine.dispose()
-        src=sqlite3.connect(tmp_path)
-        dst=sqlite3.connect(db_path)
+        src.close(); dst.close(); db.session.remove(); db.engine.dispose()
+        src=sqlite3.connect(tmp_path); dst=sqlite3.connect(db_path)
         with dst: src.backup(dst)
-        src.close(); dst.close()
-        db.engine.dispose()
+        src.close(); dst.close(); db.engine.dispose()
         with app.app_context():
-            # 確保 SQLAlchemy 重新建立連線後 schema 可讀。
             from sqlalchemy import text
-            db.session.execute(text('SELECT 1'))
-            db.session.commit()
-        return jsonify({'ok':True,'message':'資料庫已成功還原。還原前的版本也已自動保存在伺服器的 database_backups 資料夾。'})
+            db.session.execute(text('SELECT 1')); db.session.commit()
+        return jsonify({'ok':True,'message':'資料庫已成功還原；還原前版本也已保存在伺服器 database_backups。'})
     except Exception as e:
         return jsonify({'ok':False,'error':f'還原失敗：{e}'}),500
     finally:
