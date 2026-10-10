@@ -146,6 +146,8 @@ class GuessRound(db.Model):
     difficulty=db.Column(db.String(10),nullable=False,default='beginner')
     guesses_json=db.Column(db.Text,nullable=False,default='[]')
     status=db.Column(db.String(12),nullable=False,default='playing')
+    play_date=db.Column(db.Date,nullable=True, index=True)
+    hp_eligible=db.Column(db.Boolean,nullable=False,default=True)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
     finished_at=db.Column(db.DateTime,nullable=True)
 
