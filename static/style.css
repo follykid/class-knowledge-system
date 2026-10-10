@@ -117,3 +117,6 @@
 .guess-monthly-detail{font-size:.78rem;color:#b8d8ee}
 .guess-monthly-row strong{margin-left:auto;color:#ffe27a;white-space:nowrap}
 .guess-monthly-empty{padding:10px;border-radius:10px;background:#0c2d4d;color:#b8d8ee;font-size:.9rem}
+
+/* V24 monthly fastest split by difficulty */
+.guess-monthly-group{margin:10px 0 14px}.guess-monthly-group h4{margin:8px 0;color:var(--text,#f5f7fb);font-size:1rem}.guess-monthly-group .guess-monthly-row{margin:6px 0}
