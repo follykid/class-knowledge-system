@@ -509,6 +509,56 @@ def guess_leaderboard():
     students.sort(key=lambda st:(-totals.get(st.id,0), st.seat or 0, st.id))
     return jsonify({'ok':True,'items':[{'name':st.name,'seat':st.seat or 0,'earned_hp':totals[st.id]} for st in students[:5]]})
 
+@app.get('/api/guess/monthly-fastest')
+@login_required
+def guess_monthly_fastest():
+    # 本月最快答對紀錄：以台灣當月日期統計，初階／進階合併比較猜中所需次數；最低次數相同者全部並列。
+    today = _guess_today_taiwan()
+    month_start = today.replace(day=1)
+    if today.month == 12:
+        next_month = today.replace(year=today.year + 1, month=1, day=1)
+    else:
+        next_month = today.replace(month=today.month + 1, day=1)
+    rounds = GuessRound.query.filter(
+        GuessRound.status == 'won',
+        GuessRound.play_date >= month_start,
+        GuessRound.play_date < next_month
+    ).all()
+    records = []
+    for round_obj in rounds:
+        try:
+            attempts = len(json.loads(round_obj.guesses_json or '[]'))
+        except (TypeError, ValueError):
+            continue
+        if attempts < 1:
+            continue
+        student = db.session.get(Student, round_obj.student_id)
+        if not student or student.role != 'student':
+            continue
+        records.append({
+            'name': student.name,
+            'seat': student.seat or 0,
+            'attempts': attempts,
+            'difficulty': round_obj.difficulty,
+            'digits': 4 if round_obj.difficulty == 'advanced' else 3,
+            'play_date': round_obj.play_date.isoformat() if round_obj.play_date else None,
+        })
+    if not records:
+        return jsonify({'ok': True, 'month': today.strftime('%Y年%m月'), 'best_attempts': None, 'items': []})
+    best_attempts = min(item['attempts'] for item in records)
+    winners = [item for item in records if item['attempts'] == best_attempts]
+    winners.sort(key=lambda item: (item['seat'], item['name'], item['play_date'] or ''))
+    # 同一位學生若本月多次以相同最快次數答對，只列一次，避免重複佔版面。
+    unique = []
+    seen = set()
+    for item in winners:
+        key = (item['seat'], item['name'])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return jsonify({'ok': True, 'month': today.strftime('%Y年%m月'), 'best_attempts': best_attempts, 'items': unique})
+
 @app.get('/api/guess/state')
 @login_required
 def guess_state():

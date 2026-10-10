@@ -105,3 +105,15 @@
 .guess-layout .guess-game-card{margin:0;min-width:0}
 @media(max-width:900px){.guess-layout{grid-template-columns:1fr}.guess-leaderboard-list{grid-template-columns:1fr 1fr}}
 @media(max-width:520px){.guess-leaderboard-list{grid-template-columns:1fr}}
+
+/* 本月猜數字最快答對紀錄 */
+.guess-monthly-fastest{margin-top:18px;padding-top:15px;border-top:1px solid #3b6d91}
+.guess-monthly-fastest h3{margin:0 0 8px;color:#ffe27a;font-size:1.05rem}
+.guess-monthly-list{display:grid;gap:7px;margin-top:9px}
+.guess-monthly-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 10px;border:1px solid #3678a5;border-radius:12px;background:#0c2d4d;color:#f1faff;font-size:.9rem}
+.guess-monthly-medal{font-size:1.15rem}
+.guess-monthly-seat{font-size:.78rem;color:#b8d8ee;white-space:nowrap}
+.guess-monthly-name{min-width:3em}
+.guess-monthly-detail{font-size:.78rem;color:#b8d8ee}
+.guess-monthly-row strong{margin-left:auto;color:#ffe27a;white-space:nowrap}
+.guess-monthly-empty{padding:10px;border-radius:10px;background:#0c2d4d;color:#b8d8ee;font-size:.9rem}
