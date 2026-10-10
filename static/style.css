@@ -81,3 +81,4 @@
 .guess-number{font-size:1.2rem;letter-spacing:.12em}
 .guess-row strong{color:#2563eb;text-align:right}
 @media(max-width:520px){.guess-entry{flex-direction:column}.guess-entry button{width:100%}}
+.guess-mode-select{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.guess-difficulty{border:1px solid #b8c8d8;border-radius:10px;padding:9px 12px;font-weight:800;background:#fff;color:#172033}.guess-rules{line-height:1.8;background:#eff8ff;border:1px solid #c8e6f7;border-radius:12px;padding:12px 14px;margin:12px 0;color:#24445c}.guess-entry{flex-wrap:wrap}.guess-entry button{flex:0 0 auto}
