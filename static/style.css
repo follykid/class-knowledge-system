@@ -78,7 +78,25 @@
 .guess-entry input{min-width:0;flex:1;border:1px solid #cbd5e1;border-radius:12px;padding:12px 14px;font-size:1.25rem;letter-spacing:.2em;text-align:center}
 .guess-history{margin-top:14px;display:grid;gap:8px;max-width:460px}
 .guess-row{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;padding:10px 14px;border-radius:12px;background:#fff;border:1px solid #e2e8f0}
-.guess-number{font-size:1.2rem;letter-spacing:.12em}
+.guess-number{font-size:1.2rem;letter-spacing:.12em;color:#172033;font-weight:800;opacity:1}
 .guess-row strong{color:#2563eb;text-align:right}
 @media(max-width:520px){.guess-entry{flex-direction:column}.guess-entry button{width:100%}}
 .guess-mode-select{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}.guess-difficulty{border:1px solid #b8c8d8;border-radius:10px;padding:9px 12px;font-weight:800;background:#fff;color:#172033}.guess-rules{line-height:1.8;background:#eff8ff;border:1px solid #c8e6f7;border-radius:12px;padding:12px 14px;margin:12px 0;color:#24445c}.guess-entry{flex-wrap:wrap}.guess-entry button{flex:0 0 auto}
+
+
+/* V20 猜數字遊戲與專屬 HP 排行榜並排 */
+.guess-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.85fr);gap:18px;align-items:start;margin-bottom:18px}
+.guess-layout .guess-game-card{margin:0;min-width:0}
+.guess-leaderboard-card{min-width:0;background:linear-gradient(145deg,#fffdf4,#f4faff);border:2px solid #f4d77b;color:#172033}
+.guess-leaderboard-card h2{margin-top:0;margin-bottom:6px}
+.guess-leaderboard-card .muted{color:#64748b}
+.guess-leaderboard-status{font-size:12px;margin:10px 0}
+.guess-leaderboard-list{display:grid;gap:9px}
+.guess-leader-row{display:grid;grid-template-columns:36px 38px minmax(0,1fr);grid-template-rows:auto auto;gap:3px 8px;align-items:center;padding:10px 11px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;min-width:0}
+.guess-leader-rank{grid-row:1/3;font-size:22px;text-align:center;font-weight:900}
+.guess-leader-seat{font-size:11px;color:#64748b;grid-column:2;grid-row:1}
+.guess-leader-name{grid-column:3;grid-row:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.guess-leader-hp{grid-column:2/4;grid-row:2;color:#c47b00;font-size:15px;white-space:nowrap}
+.guess-leader-empty{padding:14px;border-radius:10px;background:#fff;text-align:center}
+@media(max-width:900px){.guess-layout{grid-template-columns:1fr}.guess-leaderboard-list{grid-template-columns:1fr 1fr}}
+@media(max-width:520px){.guess-leaderboard-list{grid-template-columns:1fr}}

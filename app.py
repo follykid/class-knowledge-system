@@ -158,6 +158,23 @@ class GuessDailyReward(db.Model):
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
     __table_args__=(db.UniqueConstraint('student_id','reward_date',name='uq_guess_daily_reward_student_date'),)
 
+class GuessDailyPlay(db.Model):
+    __tablename__='guess_daily_play'
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False)
+    play_date=db.Column(db.Date,nullable=False)
+    plays_used=db.Column(db.Integer,nullable=False,default=0)
+    __table_args__=(db.UniqueConstraint('student_id','play_date',name='uq_guess_daily_play_student_date'),)
+
+class GuessRewardLog(db.Model):
+    __tablename__='guess_reward_log'
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False,index=True)
+    reward_date=db.Column(db.Date,nullable=False,index=True)
+    hp_awarded=db.Column(db.Integer,nullable=False)
+    round_id=db.Column(db.Integer,db.ForeignKey('guess_round.id'),nullable=True)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
+
 PRIZE_CARDS=[
     ('造型文具',1.0,'抽中後可向老師兌換。'),
     ('限量商品',1.0,'抽中後可向老師兌換。'),
@@ -300,7 +317,7 @@ def seed():
     insp=inspect(db.engine)
     upgrades={
         'student': [('battle_score','INTEGER DEFAULT 0')],
-        'guess_round': [('difficulty', "VARCHAR(10) NOT NULL DEFAULT 'beginner'")],
+        'guess_round': [('difficulty', "VARCHAR(10) NOT NULL DEFAULT 'beginner'"),('play_date','DATE NULL'),('hp_eligible','BOOLEAN NOT NULL DEFAULT TRUE')],
         'room': [('question_started_at','TIMESTAMP NULL')],
         'room_player': [('battle_score','INTEGER DEFAULT 0'),('last_seen','TIMESTAMP NULL')],
     }
@@ -464,11 +481,31 @@ def _guess_reward_for(difficulty, attempts):
         return 20
     return 50 if attempts <= 3 else 20
 
+def _guess_daily_usage(student_id, play_date=None):
+    play_date = play_date or _guess_today_taiwan()
+    row = GuessDailyPlay.query.filter_by(student_id=student_id, play_date=play_date).first()
+    used = int(row.plays_used or 0) if row else 0
+    return used, max(0, 6-used)
+
 def _guess_round_payload(round_obj):
     guesses=json.loads(round_obj.guesses_json or '[]')
     today=_guess_today_taiwan()
+    used, remaining=_guess_daily_usage(round_obj.student_id, today)
     reward=GuessDailyReward.query.filter_by(student_id=round_obj.student_id,reward_date=today).first()
-    return {'ok':True,'round_id':round_obj.id,'status':round_obj.status,'difficulty':round_obj.difficulty,'digits':4 if round_obj.difficulty=='advanced' else 3,'guesses':guesses,'attempts':len(guesses),'reward_claimed_today':bool(reward),'reward_hp':_guess_reward_for(round_obj.difficulty,len(guesses) or 1)}
+    return {'ok':True,'round_id':round_obj.id,'status':round_obj.status,'difficulty':round_obj.difficulty,'digits':4 if round_obj.difficulty=='advanced' else 3,'guesses':guesses,'attempts':len(guesses),'reward_claimed_today':bool(reward),'reward_hp':_guess_reward_for(round_obj.difficulty,len(guesses) or 1),'plays_used_today':used,'plays_remaining_today':remaining,'daily_play_limit':6,'hp_eligible':bool(round_obj.hp_eligible),'play_date':round_obj.play_date.isoformat() if round_obj.play_date else None}
+
+@app.get('/api/guess/leaderboard')
+@login_required
+def guess_leaderboard():
+    # 只統計猜數字遊戲實際發出的獎勵 HP，不使用學生目前總 HP 或班級積分。
+    totals={}
+    for sid, amount in db.session.query(GuessDailyReward.student_id, db.func.sum(GuessDailyReward.hp_awarded)).group_by(GuessDailyReward.student_id).all():
+        totals[sid]=totals.get(sid,0)+int(amount or 0)
+    for sid, amount in db.session.query(GuessRewardLog.student_id, db.func.sum(GuessRewardLog.hp_awarded)).group_by(GuessRewardLog.student_id).all():
+        totals[sid]=totals.get(sid,0)+int(amount or 0)
+    students=Student.query.filter(Student.role=='student',Student.id.in_(list(totals.keys()))).all() if totals else []
+    students.sort(key=lambda st:(-totals.get(st.id,0), st.seat or 0, st.id))
+    return jsonify({'ok':True,'items':[{'name':st.name,'seat':st.seat or 0,'earned_hp':totals[st.id]} for st in students[:5]]})
 
 @app.get('/api/guess/state')
 @login_required
@@ -477,8 +514,9 @@ def guess_state():
     r=GuessRound.query.filter_by(student_id=u.id,status='playing').order_by(GuessRound.id.desc()).first()
     today=_guess_today_taiwan()
     reward=GuessDailyReward.query.filter_by(student_id=u.id,reward_date=today).first()
+    used, remaining=_guess_daily_usage(u.id, today)
     if not r:
-        return jsonify({'ok':True,'active':False,'reward_claimed_today':bool(reward),'reward_hp':20})
+        return jsonify({'ok':True,'active':False,'reward_claimed_today':bool(reward),'reward_hp':20,'plays_used_today':used,'plays_remaining_today':remaining,'daily_play_limit':6})
     payload=_guess_round_payload(r); payload['active']=True
     return jsonify(payload)
 
@@ -493,13 +531,25 @@ def guess_start():
         return jsonify({'ok':False,'error':'請選擇初階或進階。'}),400
     r=GuessRound.query.filter_by(student_id=u.id,status='playing').order_by(GuessRound.id.desc()).first()
     if not r:
-        digits=3 if difficulty=='beginner' else 4
-        # 第一位不為 0，且所有數字不重複。
-        first=random.choice('123456789')
-        rest=random.sample('0123456789'.replace(first,''),digits-1)
-        answer=first+''.join(rest)
-        r=GuessRound(student_id=u.id,answer=answer,difficulty=difficulty,guesses_json='[]',status='playing')
-        db.session.add(r); db.session.commit()
+        today=_guess_today_taiwan()
+        try:
+            usage=GuessDailyPlay.query.filter_by(student_id=u.id,play_date=today).with_for_update().first()
+            if not usage:
+                usage=GuessDailyPlay(student_id=u.id,play_date=today,plays_used=0)
+                db.session.add(usage); db.session.flush()
+            if int(usage.plays_used or 0)>=6:
+                db.session.rollback()
+                return jsonify({'ok':False,'error':'今天 6 次可計算 HP 的遊戲次數已用完，請明天再來挑戰。','plays_used_today':6,'plays_remaining_today':0,'daily_play_limit':6}),429
+            digits=3 if difficulty=='beginner' else 4
+            first=random.choice('123456789')
+            rest=random.sample('0123456789'.replace(first,''),digits-1)
+            answer=first+''.join(rest)
+            usage.plays_used=int(usage.plays_used or 0)+1
+            r=GuessRound(student_id=u.id,answer=answer,difficulty=difficulty,guesses_json='[]',status='playing',play_date=today,hp_eligible=True)
+            db.session.add(r); db.session.commit()
+        except Exception:
+            db.session.rollback()
+            return jsonify({'ok':False,'error':'開始遊戲時發生問題，請再試一次。'}),500
     payload=_guess_round_payload(r); payload['active']=True
     return jsonify(payload)
 
@@ -527,28 +577,27 @@ def guess_submit():
     message=f'{a}A{b}B，繼續加油！'
     if won:
         r.status='won'; r.finished_at=datetime.now(timezone.utc)
-        today=_guess_today_taiwan()
+        reward_date=r.play_date or _guess_today_taiwan()
         reward_amount=_guess_reward_for(r.difficulty,len(guesses))
-        try:
-            reward=GuessDailyReward(student_id=u.id,reward_date=today,hp_awarded=reward_amount)
-            db.session.add(reward); db.session.flush()
-            u.hp=max(0,int(u.hp or 0))+reward_amount
-            reward_awarded=reward_amount
-            message=f'恭喜猜中！本局第 {len(guesses)} 次答對，獲得 {reward_amount} HP！'
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            # 今日已領過獎勵時仍可完成遊戲，但不重複增加 HP。
-            r=GuessRound.query.filter_by(id=r.id,student_id=u.id).first()
-            if r:
-                r.status='won'; r.finished_at=datetime.now(timezone.utc); r.guesses_json=json.dumps(guesses,ensure_ascii=False)
-                db.session.commit()
-            message='恭喜猜中！但今天的猜數字 HP 獎勵已領取，本次不再重複加 HP。'
+        if r.hp_eligible:
+            try:
+                db.session.add(GuessRewardLog(student_id=u.id,reward_date=reward_date,hp_awarded=reward_amount,round_id=r.id))
+                db.session.flush()
+                u.hp=max(0,int(u.hp or 0))+reward_amount
+                reward_awarded=reward_amount
+                message=f'恭喜猜中！本局第 {len(guesses)} 次答對，獲得 {reward_amount} HP！'
+            except Exception:
+                db.session.rollback()
+                return jsonify({'ok':False,'error':'獎勵記錄失敗，請重新整理後確認 HP。'}),500
+        else:
+            message='恭喜猜中！但本局不列入今日 HP 獎勵次數。'
+        db.session.commit()
     else:
         db.session.commit()
     today=_guess_today_taiwan()
+    used, remaining=_guess_daily_usage(u.id, today)
     reward=GuessDailyReward.query.filter_by(student_id=u.id,reward_date=today).first()
-    return jsonify({'ok':True,'a':a,'b':b,'won':won,'difficulty':r.difficulty,'guesses':guesses,'attempts':len(guesses),'status':'won' if won else 'playing','reward_awarded':reward_awarded,'reward_claimed_today':bool(reward),'hp':u.hp,'message':message})
+    return jsonify({'ok':True,'a':a,'b':b,'won':won,'difficulty':r.difficulty,'guesses':guesses,'attempts':len(guesses),'status':'won' if won else 'playing','reward_awarded':reward_awarded,'reward_claimed_today':bool(reward),'plays_used_today':used,'plays_remaining_today':remaining,'daily_play_limit':6,'hp':u.hp,'message':message})
 
 @app.post('/api/guess/abandon')
 @login_required
