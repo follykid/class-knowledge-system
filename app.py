@@ -1,5 +1,6 @@
-import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil
+import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimetypes, html
 from datetime import datetime, timezone
+from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 
 def utc_iso(dt):
@@ -55,6 +56,18 @@ class Message(db.Model):
     user_name=db.Column(db.String(50),nullable=False)
     text=db.Column(db.String(300),nullable=False)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc))
+
+class TeacherContact(db.Model):
+    __tablename__='teacher_contact'
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False,index=True)
+    student_name=db.Column(db.String(50),nullable=False)
+    student_account=db.Column(db.String(32),nullable=False)
+    message=db.Column(db.String(1000),nullable=False)
+    image_filename=db.Column(db.String(255),nullable=True)
+    image_mime=db.Column(db.String(80),nullable=True)
+    image_data=db.Column(db.LargeBinary,nullable=True)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
 
 class QuestionBank(db.Model):
     id=db.Column(db.Integer,primary_key=True)
@@ -322,6 +335,7 @@ def seed():
         'guess_round': [('difficulty', "VARCHAR(10) NOT NULL DEFAULT 'beginner'"),('play_date','DATE NULL'),('hp_eligible','BOOLEAN NOT NULL DEFAULT TRUE')],
         'room': [('question_started_at','TIMESTAMP NULL')],
         'room_player': [('battle_score','INTEGER DEFAULT 0'),('last_seen','TIMESTAMP NULL')],
+        'teacher_contact': [('image_mime','VARCHAR(80) NULL'),('image_data','BYTEA NULL')],
     }
     for table, cols in upgrades.items():
         if not inspect(db.engine).has_table(table):
@@ -476,12 +490,16 @@ def _guess_today_taiwan():
     return datetime.now(ZoneInfo('Asia/Taipei')).date()
 
 def _guess_reward_for(difficulty, attempts):
+    """依難度與本局答對前的猜測次數計算 HP 獎勵。"""
+    attempts = max(1, int(attempts or 1))
     if difficulty == 'advanced':
-        if attempts <= 3: return 100
-        if attempts <= 5: return 80
-        if attempts <= 7: return 50
-        return 20
-    return 50 if attempts <= 3 else 20
+        if attempts <= 3: return 500
+        if attempts <= 6: return 200
+        if attempts <= 8: return 150
+        return 80
+    if attempts <= 4: return 200
+    if attempts <= 8: return 100
+    return 50
 
 def _guess_daily_usage(student_id, play_date=None):
     play_date = play_date or _guess_today_taiwan()
@@ -678,6 +696,78 @@ def guess_abandon():
     before=max(0,int(u.hp or 0)); u.hp=max(0,before-40)
     db.session.commit()
     return jsonify({'ok':True,'hp':u.hp,'penalty':before-u.hp,'message':f'已放棄本局，扣除 {before-u.hp} HP。'})
+
+@app.post('/api/contact-teacher')
+@login_required
+def contact_teacher():
+    """Store a private student-to-teacher message and optional image in PostgreSQL; no email is sent."""
+    u=current_user()
+    if u.role!='student':
+        return jsonify({'ok':False,'error':'只有學生可以使用這項功能'}),403
+    message=(request.form.get('message') or '').strip()
+    upload=request.files.get('image')
+    if not message and (not upload or not upload.filename):
+        return jsonify({'ok':False,'error':'請輸入留言或選擇一張圖片'}),400
+    if len(message)>1000:
+        return jsonify({'ok':False,'error':'留言最多 1000 字'}),400
+    image_bytes=None; image_name=None; image_mime=None
+    if upload and upload.filename:
+        image_bytes=upload.read(5*1024*1024+1)
+        if len(image_bytes)>5*1024*1024:
+            return jsonify({'ok':False,'error':'圖片大小不可超過 5 MB'}),413
+        image_name=secure_filename(upload.filename) or 'student-image'
+        ext=os.path.splitext(image_name)[1].lower()
+        allowed={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp'}
+        if ext not in allowed:
+            return jsonify({'ok':False,'error':'目前只接受 JPG、PNG、GIF 或 WEBP 圖片'}),400
+        image_mime=allowed[ext]
+        valid=(image_mime=='image/jpeg' and image_bytes.startswith(b'\xff\xd8\xff')) or (image_mime=='image/png' and image_bytes.startswith(b'\x89PNG\r\n\x1a\n')) or (image_mime=='image/gif' and image_bytes[:6] in (b'GIF87a',b'GIF89a')) or (image_mime=='image/webp' and image_bytes[:4]==b'RIFF' and image_bytes[8:12]==b'WEBP')
+        if not valid:
+            return jsonify({'ok':False,'error':'檔案內容不像有效的圖片，請重新選擇'}),400
+    try:
+        row=TeacherContact(student_id=u.id,student_name=u.name,student_account=u.account,
+                           message=message or '（只附圖片）',image_filename=image_name,
+                           image_mime=image_mime,image_data=image_bytes)
+        db.session.add(row); db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception('儲存學生私訊失敗')
+        return jsonify({'ok':False,'error':'留言儲存失敗，請稍後再試。'}),500
+    return jsonify({'ok':True,'message':'留言已送出並儲存，老師可在教師管理頁面的「學生私訊」查看。'})
+
+@app.get('/api/admin/teacher-contacts')
+@login_required
+def admin_teacher_contacts():
+    u=current_user()
+    if not u or u.role!='teacher':
+        return jsonify({'ok':False,'error':'需要教師權限'}),403
+    rows=TeacherContact.query.order_by(TeacherContact.created_at.desc(),TeacherContact.id.desc()).limit(200).all()
+    return jsonify({'ok':True,'items':[{'id':r.id,'student_name':r.student_name,'student_account':r.student_account,
+        'message':r.message,'image_filename':r.image_filename,'has_image':bool(r.image_data),
+        'timestamp':int(r.created_at.timestamp()*1000) if r.created_at else 0} for r in rows]})
+
+@app.get('/api/admin/teacher-contacts/<int:contact_id>/image')
+@login_required
+def admin_teacher_contact_image(contact_id):
+    u=current_user()
+    if not u or u.role!='teacher':
+        return jsonify({'ok':False,'error':'需要教師權限'}),403
+    row=db.session.get(TeacherContact,contact_id)
+    if not row or not row.image_data:
+        return jsonify({'ok':False,'error':'找不到圖片'}),404
+    return Response(row.image_data,mimetype=row.image_mime or 'application/octet-stream',headers={'Content-Disposition':f'inline; filename="{secure_filename(row.image_filename or "student-image")}"','Cache-Control':'private, no-store'})
+
+@app.delete('/api/admin/teacher-contacts/<int:contact_id>')
+@login_required
+def admin_delete_teacher_contact(contact_id):
+    u=current_user()
+    if not u or u.role!='teacher':
+        return jsonify({'ok':False,'error':'需要教師權限'}),403
+    row=db.session.get(TeacherContact,contact_id)
+    if not row:
+        return jsonify({'ok':False,'error':'找不到這則私訊'}),404
+    db.session.delete(row); db.session.commit()
+    return jsonify({'ok':True})
 
 @app.get('/api/messages')
 @login_required
