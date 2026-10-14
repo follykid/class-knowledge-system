@@ -190,6 +190,24 @@ class GuessRewardLog(db.Model):
     round_id=db.Column(db.Integer,db.ForeignKey('guess_round.id'),nullable=True)
     created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
 
+
+class MathCardDailyPlay(db.Model):
+    __tablename__='math_card_daily_play'
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False,index=True)
+    play_date=db.Column(db.Date,nullable=False,index=True)
+    plays_used=db.Column(db.Integer,nullable=False,default=0)
+    __table_args__=(db.UniqueConstraint('student_id','play_date',name='uq_math_card_daily_play_student_date'),)
+
+class MathCardRewardLog(db.Model):
+    __tablename__='math_card_reward_log'
+    id=db.Column(db.Integer,primary_key=True)
+    student_id=db.Column(db.Integer,db.ForeignKey('student.id'),nullable=False,index=True)
+    reward_date=db.Column(db.Date,nullable=False,index=True)
+    hp_awarded=db.Column(db.Integer,nullable=False,default=100)
+    round_key=db.Column(db.String(80),nullable=False,unique=True)
+    created_at=db.Column(db.DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
+
 PRIZE_CARDS=[
     ('造型文具',1.0,'抽中後可向老師兌換。'),
     ('限量商品',1.0,'抽中後可向老師兌換。'),
@@ -487,22 +505,53 @@ def me():
     u=current_user();
     if not u: return jsonify({'ok':False}),401
     return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
+def _math_today_taiwan():
+    return datetime.now(ZoneInfo('Asia/Taipei')).date()
+
+def _math_daily_row(student_id, today=None):
+    today=today or _math_today_taiwan()
+    row=MathCardDailyPlay.query.filter_by(student_id=student_id,play_date=today).first()
+    if row is None:
+        row=MathCardDailyPlay(student_id=student_id,play_date=today,plays_used=0)
+        db.session.add(row); db.session.flush()
+    return row
+
+def _math_round_payload(game, plays_used=0):
+    if not game: return None
+    result=dict(game)
+    result['daily_play_limit']=3
+    result['plays_used_today']=plays_used
+    result['plays_remaining_today']=max(0,3-plays_used)
+    return result
+
 @app.get('/api/math-cards/state')
 @login_required
 def math_cards_state():
-    u=current_user(); game=session.get('math_cards_round')
-    return jsonify({'ok':True,'user':{'name':u.name,'hp':u.hp},'round':game})
+    u=current_user(); game=session.get('math_cards_round'); today=_math_today_taiwan()
+    row=MathCardDailyPlay.query.filter_by(student_id=u.id,play_date=today).first()
+    used=row.plays_used if row else 0
+    month_start=today.replace(day=1)
+    return jsonify({'ok':True,'user':{'name':u.name,'hp':u.hp},'round':_math_round_payload(game,used),'plays_used_today':used,'plays_remaining_today':max(0,3-used),'daily_play_limit':3,'leaderboard_month':today.strftime('%Y-%m')})
 
 @app.post('/api/math-cards/new')
 @login_required
 def math_cards_new():
-    # 先隨機產生四張牌，再用其中兩至四張牌構造可達成的整數目標。
+    u=current_user(); today=_math_today_taiwan()
+    existing=session.get('math_cards_round')
+    # 若尚有未完成的本局，重新整理不額外消耗遊戲次數。
+    if existing and not existing.get('solved') and not existing.get('skipped'):
+        row=MathCardDailyPlay.query.filter_by(student_id=u.id,play_date=today).first()
+        used=row.plays_used if row else 0
+        return jsonify({'ok':True,'round':_math_round_payload(existing,used),'plays_used_today':used,'plays_remaining_today':max(0,3-used),'daily_play_limit':3})
+    row=_math_daily_row(u.id,today)
+    if row.plays_used>=3:
+        db.session.commit()
+        return jsonify({'ok':False,'error':'今天的數學出牌遊戲 3 次已用完，請明天再來！','plays_used_today':row.plays_used,'plays_remaining_today':0,'daily_play_limit':3}),429
+    # 先隨機產生四張牌，再用其中兩張牌構造可達成的整數目標。
     cards=[random.randint(1,10) for _ in range(4)]
-    ops=['+','-','*','/']
-    target=None
+    ops=['+','-','*','/']; target=None
     for _ in range(300):
-        vals=cards[:]; random.shuffle(vals)
-        a,b=vals[0],vals[1]; op=random.choice(ops)
+        vals=cards[:]; random.shuffle(vals); a,b=vals[0],vals[1]; op=random.choice(ops)
         if op=='+': v=a+b
         elif op=='-': v=a-b
         elif op=='*': v=a*b
@@ -511,11 +560,26 @@ def math_cards_new():
             v=a//b
         if v>0 and v<=50:
             target=v; break
-    if target is None:
-        target=cards[0]+cards[1]
-    game={'cards':cards,'target':target,'solved':False,'reward':20}
+    if target is None: target=cards[0]+cards[1]
+    row.plays_used+=1
+    game={'round_key':str(uuid.uuid4()),'cards':cards,'target':target,'solved':False,'skipped':False,'reward':100}
     session['math_cards_round']=game
-    return jsonify({'ok':True,'round':game})
+    db.session.commit()
+    return jsonify({'ok':True,'round':_math_round_payload(game,row.plays_used),'plays_used_today':row.plays_used,'plays_remaining_today':max(0,3-row.plays_used),'daily_play_limit':3})
+
+@app.post('/api/math-cards/skip')
+@login_required
+def math_cards_skip():
+    u=current_user(); game=session.get('math_cards_round')
+    if not game: return jsonify({'ok':False,'error':'目前沒有進行中的牌局。'}),400
+    if game.get('solved') or game.get('skipped'):
+        return jsonify({'ok':True,'hp':u.hp,'penalty':0,'message':'本局已結束。'})
+    before=max(0,int(u.hp or 0)); u.hp=max(0,before-40)
+    game['skipped']=True; session['math_cards_round']=game
+    db.session.commit()
+    row=MathCardDailyPlay.query.filter_by(student_id=u.id,play_date=_math_today_taiwan()).first()
+    used=row.plays_used if row else 0
+    return jsonify({'ok':True,'hp':u.hp,'penalty':before-u.hp,'plays_used_today':used,'plays_remaining_today':max(0,3-used),'message':f'已跳過本局，扣除 {before-u.hp} HP。'})
 
 @app.post('/api/math-cards/submit')
 @login_required
@@ -523,11 +587,11 @@ def math_cards_submit():
     u=current_user(); game=session.get('math_cards_round')
     if not game: return jsonify({'ok':False,'error':'請先開始新的一局。'}),400
     if game.get('solved'): return jsonify({'ok':False,'error':'這一局已經成功出牌，請開始新的一局。'}),400
+    if game.get('skipped'): return jsonify({'ok':False,'error':'這一局已跳過，請開始新的一局。'}),400
     expression=str((request.get_json() or {}).get('expression','')).strip()
     if not expression or len(expression)>100: return jsonify({'ok':False,'error':'請輸入算式（最多 100 個字元）。'}),400
     try:
-        tree=ast.parse(expression,mode='eval')
-        used=[]
+        tree=ast.parse(expression,mode='eval'); used=[]
         def calc(node):
             if isinstance(node,ast.Expression): return calc(node.body)
             if isinstance(node,ast.Constant) and type(node.value) in (int,float):
@@ -543,8 +607,7 @@ def math_cards_submit():
                 if b==0: raise ValueError('不能除以 0')
                 return a/b
             raise ValueError('只能使用數字、括號及 + − × ÷ 運算符號')
-        value=calc(tree)
-        available=list(game['cards'])
+        value=calc(tree); available=list(game['cards'])
         for n in used:
             found=next((i for i,x in enumerate(available) if x==n),None)
             if found is None: raise ValueError('算式只能使用桌面上提供的數字牌，每張牌最多使用一次。')
@@ -552,11 +615,30 @@ def math_cards_submit():
         if not used: raise ValueError('請使用桌面上的數字牌。')
         if abs(value-float(game['target']))>1e-9:
             return jsonify({'ok':False,'error':f'算式結果是 {value:g}，還沒達到目標 {game["target"]}，再試一次！','value':value}),400
-        reward=int(game.get('reward',20)); u.hp=max(0,int(u.hp or 0))+reward
-        game['solved']=True; session['math_cards_round']=game; db.session.commit()
-        return jsonify({'ok':True,'value':value,'target':game['target'],'hp':u.hp,'reward_hp':reward,'message':f'出牌成功！獲得 {reward} HP！'})
+        today=_math_today_taiwan(); round_key=str(game.get('round_key') or uuid.uuid4())
+        # 唯一 round_key 防止重送請求重複領取 HP。
+        if MathCardRewardLog.query.filter_by(round_key=round_key).first():
+            return jsonify({'ok':False,'error':'本局獎勵已領取，請開始新的一局。'}),400
+        reward=100; u.hp=max(0,int(u.hp or 0))+reward
+        db.session.add(MathCardRewardLog(student_id=u.id,reward_date=today,hp_awarded=reward,round_key=round_key))
+        game['solved']=True; game['reward']=reward; session['math_cards_round']=game
+        db.session.commit()
+        row=MathCardDailyPlay.query.filter_by(student_id=u.id,play_date=today).first(); used_today=row.plays_used if row else 0
+        return jsonify({'ok':True,'value':value,'target':game['target'],'hp':u.hp,'reward_hp':reward,'plays_used_today':used_today,'plays_remaining_today':max(0,3-used_today),'daily_play_limit':3,'message':f'出牌成功！獲得 {reward} HP！'})
     except (SyntaxError,ValueError,ZeroDivisionError,OverflowError) as e:
         return jsonify({'ok':False,'error':str(e) or '算式格式不正確，請檢查後再試。'}),400
+
+@app.get('/api/math-cards/leaderboard')
+@login_required
+def math_cards_leaderboard():
+    today=_math_today_taiwan(); month_start=today.replace(day=1)
+    if today.month==12: next_month=datetime(today.year+1,1,1).date()
+    else: next_month=datetime(today.year,today.month+1,1).date()
+    rows=(db.session.query(Student,db.func.coalesce(db.func.sum(MathCardRewardLog.hp_awarded),0).label('earned'))
+          .join(MathCardRewardLog,MathCardRewardLog.student_id==Student.id)
+          .filter(Student.role=='student',MathCardRewardLog.reward_date>=month_start,MathCardRewardLog.reward_date<next_month)
+          .group_by(Student.id).order_by(db.func.sum(MathCardRewardLog.hp_awarded).desc(),Student.seat.asc(),Student.name.asc()).limit(5).all())
+    return jsonify({'ok':True,'month':today.strftime('%Y-%m'),'items':[{'rank':i+1,'name':st.name,'seat':st.seat or 0,'earned_hp':int(earned)} for i,(st,earned) in enumerate(rows)]})
 
 @app.get('/api/leaderboard')
 def leaderboard(): return jsonify({'ok':True,'items':leaderboard_data()})
