@@ -621,9 +621,9 @@ def math_cards_submit():
             return jsonify({'ok':False,'error':'本局獎勵已領取，請開始新的一局。'}),400
         # 獎勵由伺服器依牌局開始時間計算，避免前端自行竄改秒數。
         elapsed=max(0.0,time.time()-float(game.get('started_at',time.time())))
-        if elapsed <= 15: reward=100
-        elif elapsed <= 30: reward=60
-        elif elapsed <= 60: reward=40
+        if elapsed <= 30: reward=100
+        elif elapsed <= 60: reward=60
+        elif elapsed <= 120: reward=40
         else: reward=20
         u.hp=max(0,int(u.hp or 0))+reward
         db.session.add(MathCardRewardLog(student_id=u.id,reward_date=today,hp_awarded=reward,round_key=round_key))
