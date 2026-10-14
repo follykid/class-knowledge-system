@@ -1,4 +1,4 @@
-import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimetypes, html, ast, operator, math
+import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimetypes, html, ast, operator, math, time
 from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
@@ -562,7 +562,7 @@ def math_cards_new():
             target=v; break
     if target is None: target=cards[0]+cards[1]
     row.plays_used+=1
-    game={'round_key':str(uuid.uuid4()),'cards':cards,'target':target,'solved':False,'skipped':False,'reward':100}
+    game={'round_key':str(uuid.uuid4()),'cards':cards,'target':target,'solved':False,'skipped':False,'reward':0,'started_at':time.time()}
     session['math_cards_round']=game
     db.session.commit()
     return jsonify({'ok':True,'round':_math_round_payload(game,row.plays_used),'plays_used_today':row.plays_used,'plays_remaining_today':max(0,3-row.plays_used),'daily_play_limit':3})
@@ -619,12 +619,18 @@ def math_cards_submit():
         # 唯一 round_key 防止重送請求重複領取 HP。
         if MathCardRewardLog.query.filter_by(round_key=round_key).first():
             return jsonify({'ok':False,'error':'本局獎勵已領取，請開始新的一局。'}),400
-        reward=100; u.hp=max(0,int(u.hp or 0))+reward
+        # 獎勵由伺服器依牌局開始時間計算，避免前端自行竄改秒數。
+        elapsed=max(0.0,time.time()-float(game.get('started_at',time.time())))
+        if elapsed <= 15: reward=100
+        elif elapsed <= 30: reward=60
+        elif elapsed <= 60: reward=40
+        else: reward=20
+        u.hp=max(0,int(u.hp or 0))+reward
         db.session.add(MathCardRewardLog(student_id=u.id,reward_date=today,hp_awarded=reward,round_key=round_key))
-        game['solved']=True; game['reward']=reward; session['math_cards_round']=game
+        game['solved']=True; game['reward']=reward; game['elapsed_seconds']=round(elapsed,2); session['math_cards_round']=game
         db.session.commit()
         row=MathCardDailyPlay.query.filter_by(student_id=u.id,play_date=today).first(); used_today=row.plays_used if row else 0
-        return jsonify({'ok':True,'value':value,'target':game['target'],'hp':u.hp,'reward_hp':reward,'plays_used_today':used_today,'plays_remaining_today':max(0,3-used_today),'daily_play_limit':3,'message':f'出牌成功！獲得 {reward} HP！'})
+        return jsonify({'ok':True,'value':value,'target':game['target'],'hp':u.hp,'reward_hp':reward,'plays_used_today':used_today,'plays_remaining_today':max(0,3-used_today),'daily_play_limit':3,'elapsed_seconds':round(elapsed,2),'message':f'出牌成功！用時 {elapsed:.1f} 秒，獲得 {reward} HP！'})
     except (SyntaxError,ValueError,ZeroDivisionError,OverflowError) as e:
         return jsonify({'ok':False,'error':str(e) or '算式格式不正確，請檢查後再試。'}),400
 
