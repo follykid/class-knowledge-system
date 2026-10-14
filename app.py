@@ -1,4 +1,4 @@
-import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimetypes, html
+import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimetypes, html, ast, operator, math
 from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
@@ -448,6 +448,11 @@ def student(): return render_template('student.html')
 def teacher(): return render_template('teacher.html')
 @app.route('/game')
 def game(): return render_template('game.html')
+
+@app.route('/math-cards')
+def math_cards_page():
+    if not current_user(): return redirect(url_for('index'))
+    return render_template('math_cards.html')
 @app.route('/display')
 def display(): return render_template('display.html')
 
@@ -482,6 +487,77 @@ def me():
     u=current_user();
     if not u: return jsonify({'ok':False}),401
     return jsonify({'ok':True,'user':{'account':u.account,'name':u.name,'seat':u.seat,'role':u.role,'score':u.score,'hp':u.hp,'battle_score':u.battle_score,'wins':u.wins,'losses':u.losses}})
+@app.get('/api/math-cards/state')
+@login_required
+def math_cards_state():
+    u=current_user(); game=session.get('math_cards_round')
+    return jsonify({'ok':True,'user':{'name':u.name,'hp':u.hp},'round':game})
+
+@app.post('/api/math-cards/new')
+@login_required
+def math_cards_new():
+    # 先隨機產生四張牌，再用其中兩至四張牌構造可達成的整數目標。
+    cards=[random.randint(1,10) for _ in range(4)]
+    ops=['+','-','*','/']
+    target=None
+    for _ in range(300):
+        vals=cards[:]; random.shuffle(vals)
+        a,b=vals[0],vals[1]; op=random.choice(ops)
+        if op=='+': v=a+b
+        elif op=='-': v=a-b
+        elif op=='*': v=a*b
+        else:
+            if b==0 or a%b: continue
+            v=a//b
+        if v>0 and v<=50:
+            target=v; break
+    if target is None:
+        target=cards[0]+cards[1]
+    game={'cards':cards,'target':target,'solved':False,'reward':20}
+    session['math_cards_round']=game
+    return jsonify({'ok':True,'round':game})
+
+@app.post('/api/math-cards/submit')
+@login_required
+def math_cards_submit():
+    u=current_user(); game=session.get('math_cards_round')
+    if not game: return jsonify({'ok':False,'error':'請先開始新的一局。'}),400
+    if game.get('solved'): return jsonify({'ok':False,'error':'這一局已經成功出牌，請開始新的一局。'}),400
+    expression=str((request.get_json() or {}).get('expression','')).strip()
+    if not expression or len(expression)>100: return jsonify({'ok':False,'error':'請輸入算式（最多 100 個字元）。'}),400
+    try:
+        tree=ast.parse(expression,mode='eval')
+        used=[]
+        def calc(node):
+            if isinstance(node,ast.Expression): return calc(node.body)
+            if isinstance(node,ast.Constant) and type(node.value) in (int,float):
+                if not math.isfinite(node.value): raise ValueError('數字不合法')
+                used.append(node.value); return node.value
+            if isinstance(node,ast.UnaryOp) and isinstance(node.op,(ast.UAdd,ast.USub)):
+                x=calc(node.operand); return x if isinstance(node.op,ast.UAdd) else -x
+            if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Add,ast.Sub,ast.Mult,ast.Div)):
+                a,b=calc(node.left),calc(node.right)
+                if isinstance(node.op,ast.Add): return a+b
+                if isinstance(node.op,ast.Sub): return a-b
+                if isinstance(node.op,ast.Mult): return a*b
+                if b==0: raise ValueError('不能除以 0')
+                return a/b
+            raise ValueError('只能使用數字、括號及 + − × ÷ 運算符號')
+        value=calc(tree)
+        available=list(game['cards'])
+        for n in used:
+            found=next((i for i,x in enumerate(available) if x==n),None)
+            if found is None: raise ValueError('算式只能使用桌面上提供的數字牌，每張牌最多使用一次。')
+            available.pop(found)
+        if not used: raise ValueError('請使用桌面上的數字牌。')
+        if abs(value-float(game['target']))>1e-9:
+            return jsonify({'ok':False,'error':f'算式結果是 {value:g}，還沒達到目標 {game["target"]}，再試一次！','value':value}),400
+        reward=int(game.get('reward',20)); u.hp=max(0,int(u.hp or 0))+reward
+        game['solved']=True; session['math_cards_round']=game; db.session.commit()
+        return jsonify({'ok':True,'value':value,'target':game['target'],'hp':u.hp,'reward_hp':reward,'message':f'出牌成功！獲得 {reward} HP！'})
+    except (SyntaxError,ValueError,ZeroDivisionError,OverflowError) as e:
+        return jsonify({'ok':False,'error':str(e) or '算式格式不正確，請檢查後再試。'}),400
+
 @app.get('/api/leaderboard')
 def leaderboard(): return jsonify({'ok':True,'items':leaderboard_data()})
 
