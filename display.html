@@ -25,7 +25,7 @@ body{overflow:hidden}.board-wrap{height:100vh;padding:18px 26px;display:flex;fle
 </div>
 <script>
 const board=document.getElementById('board'),statusEl=document.getElementById('status');let mode='score';let latest=[];
-function avatar(x){return `/static/avatars/${String(x.seat).padStart(2,'0')}.jpg`}
+function avatar(x){const file=x.account==='teacher01'?'teacher.jpg':`${String(x.seat).padStart(2,'0')}.jpg`;return `/static/avatars/${file}`}
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function setMode(m){mode=m;document.getElementById('scoreTab').classList.toggle('active',m==='score');document.getElementById('battleTab').classList.toggle('active',m==='battle');render()}
 function render(){

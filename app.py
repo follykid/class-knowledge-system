@@ -2,6 +2,8 @@ import os, json, random, string, uuid, csv, io, sqlite3, tempfile, shutil, mimet
 from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
+from fractions import Fraction
+from functools import lru_cache
 
 def utc_iso(dt):
     """Serialize DB datetimes as explicit UTC so browsers convert them to Asia/Taipei correctly."""
@@ -524,6 +526,71 @@ def _math_round_payload(game, plays_used=0):
     result['plays_remaining_today']=max(0,3-plays_used)
     return result
 
+
+def _math_card_values_for_mask(cards, mask):
+    """Return exact rational values reachable using every card in this bitmask once."""
+    @lru_cache(maxsize=None)
+    def solve(current_mask):
+        if current_mask and current_mask & (current_mask - 1) == 0:
+            index=current_mask.bit_length()-1
+            return frozenset([Fraction(cards[index], 1)])
+        results=set()
+        sub=(current_mask-1) & current_mask
+        while sub:
+            other=current_mask ^ sub
+            if other and sub < other:  # process each unordered partition once
+                left_values=solve(sub); right_values=solve(other)
+                for a in left_values:
+                    for b in right_values:
+                        results.add(a+b)
+                        results.add(a-b); results.add(b-a)
+                        results.add(a*b)
+                        if b: results.add(a/b)
+                        if a: results.add(b/a)
+            sub=(sub-1) & current_mask
+        return frozenset(results)
+    return solve(mask)
+
+
+def _math_generate_cards_and_target():
+    """Generate four cards with a positive integer target that needs >=3 cards.
+
+    The target must be reachable with at least one three-card expression, and
+    no pair of the four cards may reach it with +, -, *, or /.
+    """
+    for _ in range(2000):
+        cards=[random.randint(1,10) for _ in range(4)]
+        full_mask=(1 << len(cards))-1
+        two_card_values=set()
+        three_card_values=set()
+        for mask in range(1,full_mask+1):
+            count=mask.bit_count()
+            if count not in (2,3):
+                continue
+            values=_math_card_values_for_mask(cards,mask)
+            if count==2:
+                two_card_values.update(values)
+            else:
+                three_card_values.update(values)
+        candidates=sorted(int(v) for v in three_card_values
+                          if v.denominator==1 and 1 <= v.numerator <= 50
+                          and v not in two_card_values)
+        if candidates:
+            return cards, random.choice(candidates)
+    # Extremely unlikely fallback: keep searching rather than issue a two-card target.
+    while True:
+        cards=[random.randint(1,10) for _ in range(4)]
+        full_mask=(1 << len(cards))-1
+        two_card_values=set(); three_card_values=set()
+        for mask in range(1,full_mask+1):
+            count=mask.bit_count()
+            if count not in (2,3): continue
+            values=_math_card_values_for_mask(cards,mask)
+            (two_card_values if count==2 else three_card_values).update(values)
+        candidates=[int(v) for v in three_card_values if v.denominator==1 and 1 <= v.numerator <= 50 and v not in two_card_values]
+        if candidates:
+            return cards, random.choice(candidates)
+
 @app.get('/api/math-cards/state')
 @login_required
 def math_cards_state():
@@ -547,20 +614,8 @@ def math_cards_new():
     if row.plays_used>=3:
         db.session.commit()
         return jsonify({'ok':False,'error':'今天的數學出牌遊戲 3 次已用完，請明天再來！','plays_used_today':row.plays_used,'plays_remaining_today':0,'daily_play_limit':3}),429
-    # 先隨機產生四張牌，再用其中兩張牌構造可達成的整數目標。
-    cards=[random.randint(1,10) for _ in range(4)]
-    ops=['+','-','*','/']; target=None
-    for _ in range(300):
-        vals=cards[:]; random.shuffle(vals); a,b=vals[0],vals[1]; op=random.choice(ops)
-        if op=='+': v=a+b
-        elif op=='-': v=a-b
-        elif op=='*': v=a*b
-        else:
-            if b==0 or a%b: continue
-            v=a//b
-        if v>0 and v<=50:
-            target=v; break
-    if target is None: target=cards[0]+cards[1]
+    # 產生四張數字牌；目標至少可用三張牌達成，而且任意兩張牌都無法達成。
+    cards,target=_math_generate_cards_and_target()
     row.plays_used+=1
     game={'round_key':str(uuid.uuid4()),'cards':cards,'target':target,'solved':False,'skipped':False,'reward':0,'started_at':time.time()}
     session['math_cards_round']=game
@@ -613,6 +668,8 @@ def math_cards_submit():
             if found is None: raise ValueError('算式只能使用桌面上提供的數字牌，每張牌最多使用一次。')
             available.pop(found)
         if not used: raise ValueError('請使用桌面上的數字牌。')
+        if len(used)<3:
+            raise ValueError('至少要使用 3 張數字牌才能出牌成功，請再加入一張手牌。')
         if abs(value-float(game['target']))>1e-9:
             return jsonify({'ok':False,'error':f'算式結果是 {value:g}，還沒達到目標 {game["target"]}，再試一次！','value':value}),400
         today=_math_today_taiwan(); round_key=str(game.get('round_key') or uuid.uuid4())
