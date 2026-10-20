@@ -6,7 +6,7 @@
 const board=document.getElementById('board'),statusEl=document.getElementById('status'),dateEl=document.getElementById('dateToday');
 let data=[];
 function updateDate(){const now=new Date();const date=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',year:'numeric',month:'long',day:'numeric'}).format(now);const wd=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',weekday:'long'}).format(now);dateEl.textContent=`${date}　${wd}`;}
-function avatar(x){return `/static/avatars/${String(x.seat).padStart(2,'0')}.jpg`}
+function avatar(x){const seat=String(x.seat??'').padStart(2,'0');const file=seat==='00'?'teacher.jpg':`${seat}.jpg`;return `/static/avatars/${file}`}
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function render(){data.sort((a,b)=>(Number(a.seat)||999)-(Number(b.seat)||999));board.innerHTML=data.map(x=>`<article class="item"><div class="head"><img class="avatar" src="${avatar(x)}" onerror="this.style.display='none'"><div><div class="seat">${String(x.seat).padStart(2,'0')} 號</div><div class="name">${esc(x.name)}</div><div class="score">目前積分 ${x.score} 分</div></div></div><button class="action ${x.toothbrush_claimed_today?'done':''}" ${x.toothbrush_claimed_today?'disabled':''} onclick="claim(${x.id},this)">${x.toothbrush_claimed_today?'✓ 今日已完成':'🪥 完成潔牙＋1 分'}</button><div class="note" id="n${x.id}"></div></article>`).join('')}
 async function load(){try{const r=await fetch('/api/display/leaderboard?mode=toothbrush',{cache:'no-store'});if(r.status===401||r.status===403){location.href='/';return}const d=await r.json();data=d.items||[];statusEl.textContent='每 5 秒更新　｜　共 '+data.length+' 位學生';render()}catch(e){statusEl.textContent='資料載入失敗'}}
